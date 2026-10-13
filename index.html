@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<script>
+window.onerror=function(msg,src,line,col,err){window.parent.postMessage({type:'app-error',message:msg,source:src,lineno:line,colno:col,stack:err&&err.stack||''},'*');};
+window.onunhandledrejection=function(e){window.parent.postMessage({type:'app-error',message:'Unhandled promise rejection: '+(e.reason&&e.reason.message||e.reason||'unknown'),stack:e.reason&&e.reason.stack||''},'*');};
+window.addEventListener('error',function(e){var t=e&&e.target;if(t&&t!==window&&t.tagName==='SCRIPT'){var u=t.src||'';window.parent.postMessage({type:'app-error',message:'Failed to load script'+(u?': '+u:' (inline module)'),source:u},'*');}},true);
+(function(){var _f=window.fetch;window.fetch=function(){var a=arguments,u=typeof a[0]==='string'?a[0]:(a[0]&&a[0].url)||'';var p=_f.apply(this,a);p.then(function(r){if(r.status===500){r.clone().text().then(function(b){window.parent.postMessage({type:'fetch-error',url:u,status:500,body:b},'*');}).catch(function(){window.parent.postMessage({type:'fetch-error',url:u,status:500,body:''},'*');});}}).catch(function(e){window.parent.postMessage({type:'fetch-error',url:u,status:0,body:e.message||'fetch failed'},'*');});return p;};})();
+</script>
+<script src="https://builder.puter.com/runtime.js" defer></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0b1120">
+<title>Zouzoua Pronostic — Matchs des prochaines 24h & analyse IA</title>
+<meta name="description" content="Tous les matchs de football des prochaines 24h avec stats d'avant-match et analyse IA en 3 scénarios.">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://js.puter.com/v2/"></script>
+<script>
+tailwind.config={theme:{extend:{fontFamily:{sans:['Inter','system-ui','sans-serif']},colors:{base:'#0b1120',panel:'#111827',line:'#1f2937',accent:'#10b981'}}}}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  body{background:#0b1120;color:#e5e7eb}
+  .scroll::-webkit-scrollbar{width:8px}.scroll::-webkit-scrollbar-thumb{background:#1f2937;border-radius:8px}
+  .match-row.active{background:#132033;border-color:#10b981}
+  .spin{animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+  .skel{background:#1a2333;border-radius:8px;animation:pulse 1.4s ease-in-out infinite}@keyframes pulse{50%{opacity:.5}}
+  .form-W{background:#10b981;color:#052e1f}.form-D{background:#64748b;color:#fff}.form-L{background:#ef4444;color:#fff}
+</style>
+    <!-- puter-pwa: generated, do not edit -->
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon-180.png">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="Zouzoua">
+    <!-- /puter-pwa -->
+</head>
+<body class="font-sans antialiased h-screen overflow-hidden">
+<div class="flex flex-col h-full">
+  <!-- Top bar -->
+  <header class="h-14 shrink-0 border-b border-line flex items-center px-4 gap-3 bg-base">
+    <div class="flex items-center gap-2">
+      <img src="icon.svg" class="w-7 h-7" alt="">
+      <span class="font-semibold tracking-tight">Zouzoua <span class="text-accent">Pronostic</span></span>
+      <span class="hidden sm:inline text-xs text-gray-500 ml-1">Prochaines 24h</span>
+    </div>
+    <div class="ml-auto flex items-center gap-2">
+      <span id="lastUpdate" class="hidden md:inline text-xs text-gray-500"></span>
+      <button id="refreshBtn" class="h-9 px-3 rounded-lg border border-line hover:bg-panel text-sm flex items-center gap-2" title="Actualiser">
+        <i data-lucide="refresh-cw" class="w-4 h-4"></i><span class="hidden sm:inline">Actualiser</span>
+      </button>
+      <div id="authBox"></div>
+    </div>
+  </header>
+
+  <div class="flex flex-1 min-h-0">
+    <!-- Match list -->
+    <aside id="listPane" class="w-full md:w-[400px] lg:w-[440px] shrink-0 border-r border-line flex flex-col min-h-0">
+      <div class="p-3 space-y-2 border-b border-line">
+        <div class="relative">
+          <i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500"></i>
+          <input id="search" placeholder="Rechercher une équipe, un championnat…" class="w-full h-10 pl-9 pr-3 rounded-lg bg-panel border border-line text-sm outline-none focus:border-accent">
+        </div>
+        <div class="flex gap-2">
+          <select id="leagueFilter" class="flex-1 min-w-0 h-9 px-2 rounded-lg bg-panel border border-line text-sm outline-none focus:border-accent">
+            <option value="">Tous les championnats</option>
+          </select>
+          <div class="h-9 px-3 rounded-lg bg-panel border border-line text-sm flex items-center gap-1.5 text-gray-300">
+            <i data-lucide="calendar-clock" class="w-4 h-4 text-accent"></i><span id="countLabel">0</span>
+          </div>
+        </div>
+      </div>
+      <div id="matchList" class="flex-1 overflow-y-auto scroll"></div>
+    </aside>
+
+    <!-- Detail -->
+    <main id="detailPane" class="hidden md:flex flex-1 min-w-0 flex-col min-h-0 bg-base">
+      <div id="detail" class="flex-1 overflow-y-auto scroll"></div>
+    </main>
+  </div>
+</div>
+
+<script type="module" src="app.stable.js"></script>
+</body>
+</html>

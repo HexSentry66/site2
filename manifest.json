@@ -1,0 +1,38 @@
+{
+  "display": "standalone",
+  "display_override": [
+    "standalone",
+    "minimal-ui",
+    "browser"
+  ],
+  "orientation": "any",
+  "id": "./",
+  "name": "Zouzoua Pronostic — Matchs des prochaines 24h & analyse IA",
+  "short_name": "Zouzoua",
+  "description": "Tous les matchs de football des prochaines 24h avec stats d'avant-match et analyse IA en 3 scénarios.",
+  "start_url": "./",
+  "scope": "./",
+  "background_color": "#0b1120",
+  "theme_color": "#0b1120",
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "generator": "builder.puter.com"
+}

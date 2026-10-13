@@ -1,0 +1,453 @@
+import { createIcons, icons } from 'https://cdn.jsdelivr.net/npm/lucide@latest/+esm';
+
+const API = 'https://site.api.espn.com/apis/site/v2/sports/soccer/all';
+// Adresse du service d'analyse privé (utilise VOTRE clé API, stockée côté serveur uniquement)
+const ANALYZE_URL = 'http://192.168.100.21:3000';
+const state = { matches: [], selected: null, summaries: {}, analyses: {}, filter: '', league: '' };
+
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const icons_ = () => createIcons({ icons });
+const isMobile = () => window.innerWidth < 768;
+
+/* ---------- Helpers ---------- */
+const ymd = (d) => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+const fmtTime = (d) => d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+const fmtDay = (d) => {
+  const today = new Date(); const tm = new Date(); tm.setDate(today.getDate() + 1);
+  if (d.toDateString() === today.toDateString()) return "Aujourd'hui";
+  if (d.toDateString() === tm.toDateString()) return 'Demain';
+  return d.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+};
+const fmtFull = (d) => d.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) + ' · ' + fmtTime(d);
+const countdown = (d) => {
+  const ms = d - Date.now(); if (ms <= 0) return 'En cours';
+  const h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000);
+  return h ? `dans ${h}h${String(m).padStart(2, '0')}` : `dans ${m} min`;
+};
+const americanToDecimal = (o) => {
+  if (o == null || o === '') return null; const n = parseFloat(String(o).replace('+', ''));
+  if (isNaN(n)) return null; return (n > 0 ? n / 100 + 1 : 100 / Math.abs(n) + 1).toFixed(2);
+};
+
+async function getJSON(url) {
+  try {
+    const r = await fetch(url); if (!r.ok) throw new Error(r.status); return await r.json();
+  } catch (e) {
+    if (window.puter?.net?.fetch) { const r = await puter.net.fetch(url); return await r.json(); }
+    throw e;
+  }
+}
+
+/* ---------- Data ---------- */
+function parseEvent(ev) {
+  const c = ev.competitions?.[0] || {};
+  const home = c.competitors?.find(t => t.homeAway === 'home') || c.competitors?.[0];
+  const away = c.competitors?.find(t => t.homeAway === 'away') || c.competitors?.[1];
+  const team = (t) => ({
+    id: t?.team?.id, name: t?.team?.displayName, short: t?.team?.shortDisplayName, abbr: t?.team?.abbreviation,
+    logo: t?.team?.logo, form: t?.form || '', record: t?.records?.[0]?.summary || '', score: t?.score,
+    leader: t?.leaders?.[0]?.leaders?.[0] ? `${t.leaders[0].leaders[0].athlete?.displayName} (${t.leaders[0].leaders[0].displayValue} buts)` : ''
+  });
+  const odds = c.odds?.[0];
+  return {
+    id: ev.id, date: new Date(ev.date), name: ev.name,
+    league: c.altGameNote || ev.season?.slug?.replace(/^\d{4}(-\d{2})?-/, '').replace(/-/g, ' ') || 'Football',
+    leagueSlug: ev.uid?.split('~')[1] || '',
+    state: c.status?.type?.state, status: c.status?.type?.shortDetail || c.status?.type?.description, clock: c.status?.displayClock,
+    venue: c.venue?.fullName || ev.venue?.displayName || 'Stade non communiqué',
+    city: [c.venue?.address?.city, c.venue?.address?.country].filter(Boolean).join(', '),
+    broadcasts: (c.broadcasts || []).flatMap(b => b.names || []),
+    home: team(home), away: team(away),
+    odds: odds ? {
+      provider: odds.provider?.name, overUnder: odds.overUnder,
+      home: americanToDecimal(odds.moneyline?.home?.close?.odds), draw: americanToDecimal(odds.moneyline?.draw?.close?.odds),
+      away: americanToDecimal(odds.moneyline?.away?.close?.odds),
+      over: americanToDecimal(odds.total?.over?.close?.odds), under: americanToDecimal(odds.total?.under?.close?.odds)
+    } : null
+  };
+}
+
+async function loadMatches() {
+  const list = $('#matchList');
+  list.innerHTML = Array.from({ length: 8 }, () => `<div class="p-4 border-b border-line"><div class="skel h-3 w-24 mb-3"></div><div class="skel h-4 w-3/4 mb-2"></div><div class="skel h-4 w-2/3"></div></div>`).join('');
+  $('#refreshBtn svg')?.classList.add('spin');
+  try {
+    const now = new Date(); const days = [-1, 0, 1].map(o => { const d = new Date(now); d.setDate(d.getDate() + o); return ymd(d); });
+    const res = await Promise.allSettled(days.map(d => getJSON(`${API}/scoreboard?dates=${d}`)));
+
+    console.log("=== ESPN RESULTAT ===", res);
+    const map = new Map();
+    res.forEach(r => r.status === 'fulfilled' && (r.value.events || []).forEach(ev => map.set(ev.id, ev)));
+    const limit = now.getTime() + 24 * 3600000;
+    console.log("MATCHS BRUTS:", [...map.values()].map(e => ({
+ id:e.id,
+ name:e.name,
+ state:e.competitions?.[0]?.status?.type?.state,
+ date:e.date
+})));
+
+    state.matches = [...map.values()]
+      .map(parseEvent)
+      .sort((a,b)=>a.date-b.date);
+
+console.log("MATCHS PARSES :", state.matches.length);
+console.log(state.matches.slice(0,5));
+    const leagues = [...new Set(state.matches.map(m => m.league))].sort();
+    const sel = $('#leagueFilter'); const cur = sel.value;
+    sel.innerHTML = `<option value="">Tous les championnats (${leagues.length})</option>` + leagues.map(l => `<option ${l === cur ? 'selected' : ''}>${esc(l)}</option>`).join('');
+    $('#lastUpdate').textContent = 'Mis à jour à ' + fmtTime(new Date());
+    renderList();
+    if (!state.selected && !isMobile()) renderEmpty();
+  } catch (e) {
+    list.innerHTML = `<div class="p-8 text-center text-sm text-gray-400"><i data-lucide="wifi-off" class="w-6 h-6 mx-auto mb-2"></i>Impossible de récupérer les matchs.<br><button onclick="location.reload()" class="mt-3 text-accent">Réessayer</button></div>`;
+    icons_();
+  } finally { $('#refreshBtn svg')?.classList.remove('spin'); }
+}
+
+/* ---------- List ---------- */
+function formBadges(form, size = 'w-4 h-4 text-[9px]') {
+  if (!form) return '<span class="text-xs text-gray-600">—</span>';
+  return `<div class="flex gap-0.5">${form.split('').map(r => `<span class="form-${r} ${size} rounded-sm grid place-items-center font-bold">${r === 'W' ? 'V' : r === 'L' ? 'D' : 'N'}</span>`).join('')}</div>`;
+}
+const logo = (t, cls = 'w-6 h-6') => t.logo ? `<img src="${esc(t.logo)}" class="${cls} object-contain" loading="lazy" onerror="this.style.visibility='hidden'">` : `<div class="${cls} rounded-full bg-line"></div>`;
+
+function renderList() {
+  const q = state.filter.toLowerCase();
+  const items = state.matches.filter(m => (!state.league || m.league === state.league) &&
+    (!q || [m.home.name, m.away.name, m.league, m.venue].join(' ').toLowerCase().includes(q)));
+  $('#countLabel').textContent = items.length;
+  const list = $('#matchList');
+  if (!items.length) {
+    list.innerHTML = `<div class="p-10 text-center text-sm text-gray-400"><i data-lucide="calendar-x" class="w-7 h-7 mx-auto mb-3 text-gray-600"></i>Aucun match trouvé dans les prochaines 24h.</div>`;
+    return icons_();
+  }
+  let html = '', lastDay = '';
+  items.forEach(m => {
+    const day = fmtDay(m.date);
+    if (day !== lastDay) { html += `<div class="sticky top-0 z-10 bg-base/95 backdrop-blur px-4 py-2 text-[11px] uppercase tracking-wider text-gray-500 font-semibold border-b border-line">${esc(day)}</div>`; lastDay = day; }
+    const live = m.state === 'in';
+    html += `<button data-id="${m.id}" class="match-row w-full text-left px-4 py-3 border-b border-l-2 border-l-transparent border-line hover:bg-panel transition ${state.selected === m.id ? 'active' : ''}">
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-[11px] text-gray-400 truncate pr-2 flex items-center gap-1.5"><i data-lucide="trophy" class="w-3 h-3"></i>${esc(m.league)}</span>
+        ${live ? `<span class="text-[11px] font-semibold text-red-400 flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>LIVE ${esc(m.clock)}</span>`
+               : `<span class="text-xs font-semibold text-gray-200">${fmtTime(m.date)}</span>`}
+      </div>
+      <div class="space-y-1.5">
+        ${[m.home, m.away].map(t => `<div class="flex items-center gap-2.5">${logo(t, 'w-5 h-5')}<span class="text-sm flex-1 truncate">${esc(t.name)}</span>${live ? `<span class="text-sm font-semibold">${esc(t.score)}</span>` : formBadges(t.form, 'w-3.5 h-3.5 text-[8px]')}</div>`).join('')}
+      </div>
+      <div class="mt-2 text-[11px] text-gray-500 flex items-center gap-1 truncate"><i data-lucide="map-pin" class="w-3 h-3 shrink-0"></i>${esc(m.venue)}</div>
+    </button>`;
+  });
+  list.innerHTML = html;
+  list.querySelectorAll('.match-row').forEach(b => b.onclick = () => selectMatch(b.dataset.id));
+  icons_();
+}
+
+/* ---------- Detail ---------- */
+function renderEmpty() {
+  $('#detail').innerHTML = `<div class="h-full grid place-items-center p-10 text-center">
+    <div><div class="w-14 h-14 rounded-2xl bg-panel border border-line grid place-items-center mx-auto mb-4"><i data-lucide="mouse-pointer-click" class="w-6 h-6 text-accent"></i></div>
+    <h2 class="font-semibold mb-1">Sélectionnez un match</h2>
+    <p class="text-sm text-gray-400 max-w-sm">Consultez les statistiques d'avant-match puis lancez l'analyse IA pour obtenir 3 scénarios détaillés.</p></div></div>`;
+  icons_();
+}
+
+async function selectMatch(id) {
+  state.selected = id;
+  document.querySelectorAll('.match-row').forEach(b => b.classList.toggle('active', b.dataset.id === id));
+  if (isMobile()) { $('#listPane').classList.add('hidden'); $('#detailPane').classList.remove('hidden'); $('#detailPane').classList.add('flex'); }
+  const m = state.matches.find(x => x.id === id);
+  renderDetail(m, null);
+  if (!state.summaries[id]) {
+    try { state.summaries[id] = await getJSON(`${API}/summary?event=${id}`); } catch { state.summaries[id] = {}; }
+  }
+  if (state.selected === id) renderDetail(m, state.summaries[id]);
+  if (!state.analyses[id] && puter.auth.isSignedIn()) {
+    try { const saved = await puter.kv.get('analysis_' + id); if (saved && state.selected === id) { state.analyses[id] = typeof saved === 'string' ? JSON.parse(saved) : saved; renderAnalysis(m); } } catch {}
+  }
+}
+
+function extractSummary(m, s) {
+  const out = { teamStats: {}, lastFive: {}, h2h: [], standings: [], leaders: {}, injuries: {}, odds: m.odds };
+  if (!s) return out;
+  (s.boxscore?.teams || []).forEach(t => { out.teamStats[t.team?.id] = (t.statistics || []).map(x => ({ label: x.label || x.name, value: x.displayValue })); });
+  (s.lastFiveGames || []).forEach(t => {
+    out.lastFive[t.team?.id] = (t.events || []).map(e => ({
+      date: e.gameDate, opp: e.opponent?.displayName, oppLogo: e.opponentLogo, atVs: e.atVs, score: e.score, res: e.gameResult,
+      comp: e.leagueAbbreviation || e.competitionName
+    }));
+  });
+  (s.headToHeadGames || []).forEach(g => (g.events || []).forEach(e => out.h2h.push({
+    date: e.gameDate, score: e.score, home: e.homeTeamId, away: e.awayTeamId, hs: e.homeTeamScore, as: e.awayTeamScore, comp: e.leagueAbbreviation || e.competitionName
+  })));
+  const uniqH2H = new Map(); out.h2h.forEach(h => uniqH2H.set(h.date + h.score, h)); out.h2h = [...uniqH2H.values()].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 6);
+  (s.leaders || []).forEach(t => {
+    out.leaders[t.team?.id] = (t.leaders || []).map(cat => ({ cat: cat.displayName, top: (cat.leaders || []).slice(0, 2).map(l => ({ name: l.athlete?.displayName, val: l.mainStat?.value || l.displayValue, pos: l.athlete?.position?.abbreviation })) })).filter(c => c.top.length);
+  });
+  (s.injuries || []).forEach(t => { out.injuries[t.team?.id] = (t.injuries || []).map(i => `${i.athlete?.displayName} (${i.status || i.type?.description || 'indispo'})`); });
+  const groups = s.standings?.groups || [];
+  groups.forEach(g => (g.standings?.entries || []).forEach(e => {
+    const stat = (n) => e.stats?.find(x => x.name === n || x.abbreviation === n)?.displayValue;
+    out.standings.push({ id: e.id || e.team?.id, team: e.team?.displayName || e.team, logo: e.team?.logos?.[0]?.href || e.logo?.[0]?.href, rank: stat('rank'), gp: stat('gamesPlayed'), w: stat('wins'), d: stat('ties'), l: stat('losses'), gd: stat('pointDifferential'), pts: stat('points') });
+  }));
+  if (!out.odds && s.pickcenter?.[0]) {
+    const p = s.pickcenter[0];
+    out.odds = { provider: p.provider?.name, overUnder: p.overUnder, home: americanToDecimal(p.homeTeamOdds?.moneyLine), away: americanToDecimal(p.awayTeamOdds?.moneyLine), draw: americanToDecimal(p.drawOdds?.moneyLine) };
+  }
+  return out;
+}
+
+const card = (title, icon, body) => `<section class="rounded-xl border border-line bg-panel">
+  <div class="px-4 py-3 border-b border-line flex items-center gap-2 text-sm font-semibold"><i data-lucide="${icon}" class="w-4 h-4 text-accent"></i>${title}</div>
+  <div class="p-4">${body}</div></section>`;
+
+function renderDetail(m, s) {
+  if (!m) return renderEmpty();
+  const d = extractSummary(m, s);
+  const loading = s === null;
+  const sk = `<div class="space-y-2"><div class="skel h-4"></div><div class="skel h-4 w-5/6"></div><div class="skel h-4 w-2/3"></div></div>`;
+  const live = m.state === 'in';
+
+  // Team stat comparison
+  const hs = d.teamStats[m.home.id] || [], as = d.teamStats[m.away.id] || [];
+  const statRows = hs.map(x => {
+    const y = as.find(z => z.label === x.label); const a = parseFloat(x.value) || 0, b = parseFloat(y?.value) || 0;
+    const tot = Math.abs(a) + Math.abs(b) || 1;
+    return `<div class="mb-3 last:mb-0"><div class="flex justify-between text-sm mb-1"><span class="font-semibold">${esc(x.value)}</span><span class="text-gray-400 text-xs">${esc(trLabel(x.label))}</span><span class="font-semibold">${esc(y?.value ?? '—')}</span></div>
+      <div class="flex gap-1 h-1.5"><div class="flex-1 bg-line rounded-full overflow-hidden flex justify-end"><div class="bg-accent h-full" style="width:${Math.abs(a) / tot * 100}%"></div></div><div class="flex-1 bg-line rounded-full overflow-hidden"><div class="bg-sky-500 h-full" style="width:${Math.abs(b) / tot * 100}%"></div></div></div></div>`;
+  }).join('');
+
+  const lastFive = (t) => {
+    const g = d.lastFive[t.id] || [];
+    if (!g.length) return '<p class="text-sm text-gray-500">Aucune donnée.</p>';
+    return g.slice().reverse().map(e => `<div class="flex items-center gap-2 py-1.5 text-sm border-b border-line last:border-0">
+      <span class="form-${e.res} w-5 h-5 rounded grid place-items-center text-[10px] font-bold shrink-0">${e.res === 'W' ? 'V' : e.res === 'L' ? 'D' : 'N'}</span>
+      <span class="text-gray-500 text-xs w-6">${e.atVs === '@' ? 'Ext' : 'Dom'}</span>
+      ${e.oppLogo ? `<img src="${esc(e.oppLogo)}" class="w-4 h-4 object-contain">` : ''}
+      <span class="flex-1 truncate">${esc(e.opp)}</span><span class="font-semibold tabular-nums">${esc(e.score)}</span></div>`).join('');
+  };
+
+  const odds = d.odds && (d.odds.home || d.odds.overUnder) ? `<div class="grid grid-cols-3 gap-2">
+      ${[['1', m.home.short, d.odds.home], ['N', 'Nul', d.odds.draw], ['2', m.away.short, d.odds.away]].map(([k, l, v]) => `<div class="rounded-lg bg-base border border-line p-3 text-center"><div class="text-[11px] text-gray-500 truncate">${k} · ${esc(l)}</div><div class="text-lg font-semibold mt-0.5">${v || '—'}</div></div>`).join('')}
+    </div>${d.odds.overUnder ? `<div class="mt-3 flex items-center justify-between text-sm"><span class="text-gray-400">Ligne buts (+/-)</span><span class="font-semibold">${d.odds.overUnder}${d.odds.over ? ` · Plus ${d.odds.over} / Moins ${d.odds.under}` : ''}</span></div>` : ''}
+    ${d.odds.provider ? `<p class="text-[11px] text-gray-600 mt-2">Source : ${esc(d.odds.provider)}</p>` : ''}` : '<p class="text-sm text-gray-500">Cotes non disponibles.</p>';
+
+  const h2h = d.h2h.length ? d.h2h.map(h => `<div class="flex items-center justify-between py-1.5 text-sm border-b border-line last:border-0">
+      <span class="text-gray-500 text-xs w-24">${new Date(h.date).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
+      <span class="flex-1 text-center truncate">${esc(h.home === m.home.id ? m.home.short : m.away.short)} <b class="mx-1 tabular-nums">${esc(h.hs)} - ${esc(h.as)}</b> ${esc(h.away === m.away.id ? m.away.short : m.home.short)}</span>
+      <span class="text-gray-500 text-xs w-24 text-right truncate">${esc(h.comp || '')}</span></div>`).join('') : '<p class="text-sm text-gray-500">Aucune confrontation récente.</p>';
+
+  const leaders = (t) => {
+    const l = d.leaders[t.id] || [];
+    if (!l.length) return t.leader ? `<p class="text-sm">${esc(t.leader)}</p>` : '<p class="text-sm text-gray-500">—</p>';
+    return l.slice(0, 5).map(c => `<div class="flex justify-between gap-2 py-1 text-sm"><span class="text-gray-400 text-xs">${esc(trLabel(c.cat))}</span><span class="text-right truncate">${c.top.map(p => `${esc(p.name)} <b>${esc(p.val)}</b>`).join(', ')}</span></div>`).join('');
+  };
+
+  const standingRows = d.standings.length ? `<div class="overflow-x-auto"><table class="w-full text-sm"><thead class="text-[11px] text-gray-500 uppercase"><tr><th class="text-left py-1.5 w-8">#</th><th class="text-left">Équipe</th><th>J</th><th>V</th><th>N</th><th>D</th><th>Diff</th><th>Pts</th></tr></thead><tbody>
+    ${d.standings.slice(0, 24).map(r => { const hl = r.id === m.home.id || r.id === m.away.id || r.team === m.home.name || r.team === m.away.name;
+      return `<tr class="border-t border-line ${hl ? 'bg-accent/10 text-white font-semibold' : 'text-gray-300'}"><td class="py-1.5">${esc(r.rank ?? '')}</td><td class="truncate max-w-[160px]">${esc(r.team)}</td><td class="text-center">${esc(r.gp ?? '')}</td><td class="text-center">${esc(r.w ?? '')}</td><td class="text-center">${esc(r.d ?? '')}</td><td class="text-center">${esc(r.l ?? '')}</td><td class="text-center">${esc(r.gd ?? '')}</td><td class="text-center">${esc(r.pts ?? '')}</td></tr>`; }).join('')}
+    </tbody></table></div>` : '<p class="text-sm text-gray-500">Classement non disponible.</p>';
+
+  const inj = [m.home, m.away].map(t => `<div><div class="text-xs text-gray-400 mb-1">${esc(t.short)}</div><p class="text-sm">${(d.injuries[t.id] || []).length ? d.injuries[t.id].map(esc).join(', ') : '<span class="text-gray-500">Aucune absence signalée</span>'}</p></div>`).join('');
+
+  $('#detail').innerHTML = `
+  <div class="max-w-5xl mx-auto p-4 sm:p-6 space-y-4">
+    <button id="backBtn" class="md:hidden flex items-center gap-1 text-sm text-gray-400 mb-1"><i data-lucide="chevron-left" class="w-4 h-4"></i>Matchs</button>
+    <!-- Header -->
+    <section class="rounded-xl border border-line bg-panel p-5">
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-400 mb-5">
+        <span class="flex items-center gap-1.5 text-accent font-medium"><i data-lucide="trophy" class="w-3.5 h-3.5"></i>${esc(m.league)}</span>
+        <span class="flex items-center gap-1.5"><i data-lucide="calendar" class="w-3.5 h-3.5"></i>${esc(fmtFull(m.date))}</span>
+        <span class="flex items-center gap-1.5"><i data-lucide="map-pin" class="w-3.5 h-3.5"></i>${esc(m.venue)}${m.city ? ', ' + esc(m.city) : ''}</span>
+        ${m.broadcasts.length ? `<span class="flex items-center gap-1.5"><i data-lucide="tv" class="w-3.5 h-3.5"></i>${esc(m.broadcasts.join(', '))}</span>` : ''}
+      </div>
+      <div class="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+        ${teamHead(m.home, 'Domicile')}
+        <div class="text-center px-2">
+          ${live ? `<div class="text-3xl font-bold tabular-nums">${esc(m.home.score)} - ${esc(m.away.score)}</div><div class="text-xs text-red-400 font-semibold mt-1">LIVE ${esc(m.clock)}</div>`
+                 : `<div class="text-2xl sm:text-3xl font-bold">${fmtTime(m.date)}</div><div class="text-xs text-gray-400 mt-1">${countdown(m.date)}</div>`}
+        </div>
+        ${teamHead(m.away, 'Extérieur')}
+      </div>
+      <div class="mt-5 pt-4 border-t border-line flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+        <p class="text-sm text-gray-400 flex-1">Générez 3 scénarios probables basés sur la forme, les stats, les confrontations, le classement et les cotes.</p>
+        <div id="analyzeArea"></div>
+      </div>
+    </section>
+
+    <div id="analysis"></div>
+
+    <div class="grid lg:grid-cols-2 gap-4">
+      ${card('Cotes avant-match', 'percent', odds)}
+      ${card('Statistiques de la saison', 'bar-chart-3', loading ? sk : (statRows || '<p class="text-sm text-gray-500">Statistiques non disponibles.</p>') + `<div class="flex justify-between text-[11px] text-gray-500 mt-3"><span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-accent"></span>${esc(m.home.short)}</span><span class="flex items-center gap-1">${esc(m.away.short)}<span class="w-2 h-2 rounded-full bg-sky-500"></span></span></div>`)}
+      ${card(`5 derniers matchs · ${esc(m.home.short)}`, 'history', loading ? sk : lastFive(m.home))}
+      ${card(`5 derniers matchs · ${esc(m.away.short)}`, 'history', loading ? sk : lastFive(m.away))}
+      ${card('Confrontations directes', 'swords', loading ? sk : h2h)}
+      ${card('Joueurs clés', 'user-round', loading ? sk : `<div class="grid grid-cols-1 gap-4">${[m.home, m.away].map(t => `<div><div class="text-xs font-semibold text-gray-300 mb-1 flex items-center gap-2">${logo(t, 'w-4 h-4')}${esc(t.short)}</div>${leaders(t)}</div>`).join('')}</div>`)}
+      ${card('Absences & blessures', 'cross', loading ? sk : `<div class="space-y-3">${inj}</div>`)}
+      ${card('Classement', 'list-ordered', loading ? sk : standingRows)}
+    </div>
+    <p class="text-[11px] text-gray-600 text-center pb-4">Données : ESPN. Les analyses IA sont indicatives et ne constituent pas un conseil de pari.</p>
+  </div>`;
+  $('#backBtn').onclick = () => { $('#detailPane').classList.add('hidden'); $('#listPane').classList.remove('hidden'); };
+  renderAnalyzeBtn(m, loading);
+  renderAnalysis(m);
+  icons_();
+}
+
+function teamHead(t, side) {
+  return `<div class="flex flex-col items-center text-center min-w-0">
+    ${logo(t, 'w-14 h-14 sm:w-16 sm:h-16')}
+    <div class="font-semibold mt-2 text-sm sm:text-base leading-tight">${esc(t.name)}</div>
+    <div class="text-[11px] text-gray-500 mt-0.5">${side}${t.record ? ' · ' + esc(t.record.replace(/-/g, '-')) + ' (V-N-D)' : ''}</div>
+    <div class="mt-2">${formBadges(t.form)}</div></div>`;
+}
+
+function trLabel(l) {
+  const map = { 'Goal Difference': 'Différence de buts', 'Total Goals': 'Buts marqués', 'Assists': 'Passes décisives', 'Goals Against': 'Buts encaissés',
+    'Goals': 'Buts', 'Total Shots': 'Tirs', 'Accurate Passes': 'Passes réussies', 'Saves': 'Arrêts', 'Shots on Target': 'Tirs cadrés', 'Possession': 'Possession' };
+  return map[l] || l;
+}
+
+/* ---------- AI analysis ---------- */
+function renderAnalyzeBtn(m, loading) {
+  const area = $('#analyzeArea'); if (!area) return;
+  const busy = state.analyses[m.id] === 'loading';
+  area.innerHTML = !ANALYZE_URL
+    ? `<div class="h-10 px-4 rounded-lg border border-amber-500/40 bg-amber-500/5 text-amber-300 text-sm flex items-center gap-2"><i data-lucide="key-round" class="w-4 h-4"></i>Clé API d'analyse à configurer</div>`
+    : `<button id="analyzeBtn" ${busy || loading ? 'disabled' : ''} class="h-10 px-5 rounded-lg bg-accent text-[#052e1f] font-semibold text-sm flex items-center justify-center gap-2 hover:bg-emerald-400 disabled:opacity-60 w-full sm:w-auto">
+        <i data-lucide="${busy ? 'loader-2' : 'sparkles'}" class="w-4 h-4 ${busy ? 'spin' : ''}"></i>${busy ? 'Analyse en cours…' : state.analyses[m.id] && state.analyses[m.id] !== 'loading' ? 'Relancer l\'analyse' : 'Analyser avec l\'IA'}</button>`;
+  $('#analyzeBtn') && ($('#analyzeBtn').onclick = () => analyze(m));
+  icons_();
+}
+
+function buildContext(m) {
+  const d = extractSummary(m, state.summaries[m.id]);
+  const team = (t) => ({
+    nom: t.name, forme_5_derniers: t.form, bilan_V_N_D: t.record,
+    stats_saison: d.teamStats[t.id], derniers_matchs: (d.lastFive[t.id] || []).map(e => `${e.res} ${e.atVs === '@' ? 'ext' : 'dom'} vs ${e.opp} ${e.score} (${e.comp})`),
+    joueurs_cles: (d.leaders[t.id] || []).map(c => `${c.cat}: ${c.top.map(p => p.name + ' ' + p.val).join(', ')}`),
+    absences: d.injuries[t.id] || [],
+    classement: d.standings.find(r => r.id === t.id || r.team === t.name) || null
+  });
+  return {
+    match: `${m.home.name} (domicile) vs ${m.away.name} (extérieur)`, championnat: m.league, date: fmtFull(m.date), stade: `${m.venue} ${m.city}`,
+    domicile: team(m.home), exterieur: team(m.away),
+    confrontations_directes: d.h2h.map(h => `${h.date?.slice(0, 10)}: ${h.home === m.home.id ? m.home.name : m.away.name} ${h.hs}-${h.as} ${h.away === m.away.id ? m.away.name : m.home.name}`),
+    cotes_decimales: d.odds
+  };
+}
+
+async function analyze(m) {
+  state.analyses[m.id] = 'loading';
+  renderAnalyzeBtn(m); renderAnalysis(m);
+  const ctx = buildContext(m);
+  try {
+    const r = await fetch(ANALYZE_URL.replace(/\/$/, '') + '/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: ctx }) });
+
+    console.log("=== STATUS API ===", r.status);
+    const debugText = await r.clone().text();
+    console.log("=== REPONSE WORKER ===", debugText);
+    console.log("=== DEBUG ZOUZOUA API ===");
+    console.log("Status API :", r.status);
+    const debugText = await r.clone().text();
+    console.log("Réponse brute IA :", debugText);
+    console.log("=========================");
+
+    const json = await r.json();
+    if (!r.ok || json.error) throw new Error(json.error || 'Erreur du service d\'analyse');
+    json.generatedAt = Date.now();
+    state.analyses[m.id] = json;
+    if (puter.auth.isSignedIn()) { try { await puter.kv.set('analysis_' + m.id, JSON.stringify(json)); } catch {} }
+  } catch (e) {
+    state.analyses[m.id] = { error: e?.message || 'Erreur lors de l\'analyse' };
+  }
+  if (state.selected === m.id) { renderAnalyzeBtn(m); renderAnalysis(m); }
+}
+
+async function _unusedLegacy(m, ctx) {
+  const prompt = `Tu es un analyste football expert. À partir des données d'avant-match ci-dessous (JSON), propose exactement 3 scénarios plausibles et distincts pour ce match. Base-toi uniquement sur les données fournies et sur ta connaissance générale des équipes. Les probabilités des 3 scénarios doivent totaliser 100.
+
+DONNÉES:
+${JSON.stringify(ctx)}
+
+Réponds UNIQUEMENT avec un JSON valide (sans markdown) au format :
+{
+ "resume": "synthèse en 2-3 phrases du rapport de force",
+ "scenarios": [
+   {"titre": "titre court", "issue": "1|N|2", "probabilite": 45, "score_probable": "2-1", "total_buts": "Plus de 2.5", "deux_equipes_marquent": "Oui|Non", "deroulement": "récit du déroulé du match en 3-4 phrases", "facteurs_cles": ["facteur 1","facteur 2","facteur 3"]}
+ ],
+ "points_attention": ["point 1","point 2"],
+ "confiance": "Faible|Moyenne|Élevée"
+}`;
+  return prompt;
+}
+
+function renderAnalysis(m) {
+  const box = $('#analysis'); if (!box) return;
+  const a = state.analyses[m.id];
+  if (!a) { box.innerHTML = ''; return; }
+  if (a === 'loading') {
+    box.innerHTML = `<section class="rounded-xl border border-accent/40 bg-panel p-5"><div class="flex items-center gap-2 text-sm font-semibold mb-4"><i data-lucide="loader-2" class="w-4 h-4 text-accent spin"></i>L'IA analyse toutes les données du match…</div>
+      <div class="grid md:grid-cols-3 gap-3">${[1, 2, 3].map(() => `<div class="rounded-lg border border-line p-4 space-y-2"><div class="skel h-4 w-2/3"></div><div class="skel h-8 w-1/3"></div><div class="skel h-3"></div><div class="skel h-3 w-5/6"></div><div class="skel h-3 w-4/6"></div></div>`).join('')}</div></section>`;
+    return icons_();
+  }
+  if (a.error) {
+    box.innerHTML = `<section class="rounded-xl border border-red-500/40 bg-red-500/5 p-4 text-sm text-red-300 flex items-center gap-2"><i data-lucide="alert-triangle" class="w-4 h-4"></i>${esc(a.error)}</section>`;
+    return icons_();
+  }
+  const colors = ['#10b981', '#38bdf8', '#f59e0b'];
+  const issueLabel = (i) => i === '1' ? `Victoire ${m.home.short}` : i === '2' ? `Victoire ${m.away.short}` : 'Match nul';
+  const sc = (a.scenarios || []).slice(0, 3).sort((x, y) => (y.probabilite || 0) - (x.probabilite || 0));
+  box.innerHTML = `<section class="rounded-xl border border-line bg-panel">
+    <div class="px-4 py-3 border-b border-line flex flex-wrap items-center gap-2"><i data-lucide="sparkles" class="w-4 h-4 text-accent"></i><span class="text-sm font-semibold">Analyse IA · 3 scénarios</span>
+      ${a.confiance ? `<span class="ml-auto text-[11px] px-2 py-0.5 rounded-full border border-line text-gray-300">Confiance : ${esc(a.confiance)}</span>` : ''}</div>
+    <div class="p-4 space-y-4">
+      ${a.resume ? `<p class="text-sm text-gray-300 leading-relaxed">${esc(a.resume)}</p>` : ''}
+      <div class="flex h-2 rounded-full overflow-hidden bg-line">${sc.map((s, i) => `<div style="width:${s.probabilite}%;background:${colors[i]}"></div>`).join('')}</div>
+      <div class="grid md:grid-cols-3 gap-3">
+        ${sc.map((s, i) => `<article class="rounded-lg border border-line bg-base p-4 flex flex-col">
+          <div class="flex items-start justify-between gap-2 mb-2"><span class="text-[11px] font-semibold uppercase tracking-wider" style="color:${colors[i]}">Scénario ${i + 1}</span><span class="text-xl font-bold" style="color:${colors[i]}">${esc(s.probabilite)}%</span></div>
+          <h3 class="font-semibold leading-snug">${esc(s.titre)}</h3>
+          <div class="flex flex-wrap gap-1.5 my-3 text-[11px]">
+            <span class="px-2 py-0.5 rounded bg-panel border border-line">${esc(issueLabel(String(s.issue)))}</span>
+            <span class="px-2 py-0.5 rounded bg-panel border border-line">Score : <b>${esc(s.score_probable)}</b></span>
+            ${s.total_buts ? `<span class="px-2 py-0.5 rounded bg-panel border border-line">${esc(s.total_buts)}</span>` : ''}
+            ${s.deux_equipes_marquent ? `<span class="px-2 py-0.5 rounded bg-panel border border-line">BTTS : ${esc(s.deux_equipes_marquent)}</span>` : ''}
+          </div>
+          <p class="text-sm text-gray-400 leading-relaxed flex-1">${esc(s.deroulement)}</p>
+          ${(s.facteurs_cles || []).length ? `<ul class="mt-3 pt-3 border-t border-line space-y-1">${s.facteurs_cles.map(f => `<li class="text-xs text-gray-300 flex gap-1.5"><i data-lucide="check" class="w-3.5 h-3.5 shrink-0 mt-px" style="color:${colors[i]}"></i>${esc(f)}</li>`).join('')}</ul>` : ''}
+        </article>`).join('')}
+      </div>
+      ${(a.points_attention || []).length ? `<div class="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3"><div class="text-xs font-semibold text-amber-300 mb-1 flex items-center gap-1.5"><i data-lucide="alert-circle" class="w-3.5 h-3.5"></i>Points d'attention</div><ul class="text-sm text-gray-300 space-y-0.5">${a.points_attention.map(p => `<li>• ${esc(p)}</li>`).join('')}</ul></div>` : ''}
+      ${a.generatedAt ? `<p class="text-[11px] text-gray-600">Généré le ${new Date(a.generatedAt).toLocaleString('fr-FR')}${a.model ? ' \u00b7 Mod\u00e8le : ' + esc(a.model) : ''}</p>` : ''}
+    </div></section>`;
+  icons_();
+}
+
+/* ---------- Auth ---------- */
+async function renderAuth() {
+  const box = $('#authBox');
+  if (puter.auth.isSignedIn()) {
+    let name = ''; try { name = (await puter.auth.getUser()).username; } catch {}
+    box.innerHTML = `<button id="signOut" class="h-9 pl-2 pr-3 rounded-lg border border-line hover:bg-panel text-sm flex items-center gap-2" title="Se déconnecter">
+      <span class="w-6 h-6 rounded-full bg-accent text-[#052e1f] grid place-items-center text-xs font-bold">${esc((name || '?')[0].toUpperCase())}</span><span class="hidden sm:inline">${esc(name)}</span></button>`;
+    $('#signOut').onclick = () => { puter.auth.signOut(); state.analyses = {}; renderAuth(); refreshDetail(); };
+  } else {
+    box.innerHTML = `<button id="signIn" class="h-9 px-3 rounded-lg bg-accent text-[#052e1f] font-semibold text-sm flex items-center gap-2"><i data-lucide="log-in" class="w-4 h-4"></i><span class="hidden sm:inline">Connexion</span></button>`;
+    $('#signIn').onclick = signIn;
+  }
+  icons_();
+}
+async function signIn() { try { await puter.auth.signIn(); } catch {} renderAuth(); refreshDetail(); }
+function refreshDetail() { if (state.selected) selectMatch(state.selected); }
+
+/* ---------- Init ---------- */
+$('#search').oninput = (e) => { state.filter = e.target.value; renderList(); };
+$('#leagueFilter').onchange = (e) => { state.league = e.target.value; renderList(); };
+$('#refreshBtn').onclick = loadMatches;
+icons_();
+renderAuth();
+loadMatches();
+setInterval(loadMatches, 10 * 60 * 1000);
