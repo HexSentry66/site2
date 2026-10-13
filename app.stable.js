@@ -2,7 +2,7 @@ import { createIcons, icons } from 'https://cdn.jsdelivr.net/npm/lucide@latest/+
 
 const API = 'https://site.api.espn.com/apis/site/v2/sports/soccer/all';
 // Adresse du service d'analyse privé (utilise VOTRE clé API, stockée côté serveur uniquement)
-const ANALYZE_URL = 'http://localhost:3000';
+const ANALYZE_URL = 'https://zouzoua-pronostic.onrender.com';
 const state = { matches: [], selected: null, summaries: {}, analyses: {}, filter: '', league: '' };
 
 const $ = (s) => document.querySelector(s);
