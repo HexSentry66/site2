@@ -108,6 +108,6 @@ Règles obligatoires :
   }
 });
 
-app.listen(3000, "0.0.0.0", () => {
+app.listen(process.env.PORT || 3000, "0.0.0.0", () => {
   console.log("Zouzoua local lancé sur http://localhost:3000");
 });
