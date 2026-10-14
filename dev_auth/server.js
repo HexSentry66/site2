@@ -6,6 +6,8 @@ if (process.env.NODE_ENV !== "production") {
 
 const app = express();
 
+app.set('trust proxy', 1);
+
 app.use(express.json({ limit: "20kb" }));
 
 // Bloquer l'accès public aux données et fichiers internes.
