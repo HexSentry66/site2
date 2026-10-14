@@ -376,7 +376,7 @@ function attachAuth(app) {
       }
       return res.json({ ok: true, phone: user.phone });
     } catch (err) {
-      console.error('Erreur connexion :', err.message);
+      console.error('Erreur connexion :', err.message, err.code, err.stack);
       return res.status(500).json({
         error: 'Connexion momentanément impossible.'
       });
