@@ -25,3 +25,13 @@ dev_auth/node_modules/
 dev_auth/**/*.before-*
 dev_auth/**/*.backup-*
 dev_auth/**/*test-backup*
+
+# Root development backups
+*.before-*
+*.test-backup.js
+*.backup.js
+
+# Root development backups
+*.before-*
+*.test-backup.js
+*.backup.js
