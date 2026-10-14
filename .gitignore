@@ -15,3 +15,13 @@ production_backup/
 safety_backup_*/
 dev_auth/**/*.before-*
 dev_auth/migration_work_*/
+
+# Auth production secrets
+dev_auth/secrets/
+dev_auth/data/*.sqlite*
+dev_auth/node_modules/
+
+# Development backups
+dev_auth/**/*.before-*
+dev_auth/**/*.backup-*
+dev_auth/**/*test-backup*
