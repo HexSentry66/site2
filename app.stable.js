@@ -480,7 +480,7 @@ function renderAnalysis(m) {
           <ins class="adsbygoogle"
                style="display:inline-block;width:320px;height:100px"
                data-ad-client="ca-pub-8143082489700562"
-               data-ad-slot="8454879474"></ins>
+               data-ad-slot="1733558459"></ins>
         </div>` : ''}
     </section>`;
 
