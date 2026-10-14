@@ -36,3 +36,4 @@ dev_auth/**/*test-backup*
 *.test-backup.js
 *.backup.js
 dev_auth/cookies.txt
+index.html.backup-*

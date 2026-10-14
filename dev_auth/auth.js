@@ -283,7 +283,7 @@ function requireAdmin(req, res, next) {
 }
 
 function requireSuperAdmin(req, res, next) {
-  if (req.user?.id !== 1) {
+  if (req.user?.id !== 5) {
     return res.status(403).json({
       error: 'Action réservée au super administrateur.'
     });

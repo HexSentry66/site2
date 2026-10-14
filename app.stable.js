@@ -110,11 +110,12 @@ function renderList() {
     list.innerHTML = `<div class="p-10 text-center text-sm text-gray-400"><i data-lucide="calendar-x" class="w-7 h-7 mx-auto mb-3 text-gray-600"></i>Aucun match trouvé dans les prochaines 24h.</div>`;
     return icons_();
   }
-  let html = '', lastDay = '';
+  let html = '', lastDay = '', matchCount = 0;
   items.forEach(m => {
     const day = fmtDay(m.date);
     if (day !== lastDay) { html += `<div class="sticky top-0 z-10 bg-base/95 backdrop-blur px-4 py-2 text-[11px] uppercase tracking-wider text-gray-500 font-semibold border-b border-line">${esc(day)}</div>`; lastDay = day; }
     const live = m.state === 'in';
+    matchCount++;
     html += `<button data-id="${m.id}" class="match-row w-full text-left px-4 py-3 border-b border-l-2 border-l-transparent border-line hover:bg-panel transition ${state.selected === m.id ? 'active' : ''}">
       <div class="flex items-center justify-between mb-2">
         <span class="text-[11px] text-gray-400 truncate pr-2 flex items-center gap-1.5"><i data-lucide="trophy" class="w-3 h-3"></i>${esc(m.league)}</span>
@@ -126,8 +127,26 @@ function renderList() {
       </div>
       <div class="mt-2 text-[11px] text-gray-500 flex items-center gap-1 truncate"><i data-lucide="map-pin" class="w-3 h-3 shrink-0"></i>${esc(m.venue)}</div>
     </button>`;
+    if (matchCount % 5 === 0 && matchCount < items.length) {
+      html += `<div class="p-3 border-b border-line" aria-label="Publicité">
+        <ins class="adsbygoogle"
+             style="display:block; min-height:100px"
+             data-ad-format="fluid"
+             data-ad-layout-key="-fb+5w+4e-db+86"
+             data-ad-client="ca-pub-8143082489700562"
+             data-ad-slot="8237678040"></ins>
+      </div>`;
+    }
   });
   list.innerHTML = html;
+  list.querySelectorAll(".adsbygoogle").forEach(ad => {
+    if (ad.dataset.adsbygoogleStatus) return;
+    try {
+      (window.adsbygoogle = window.adsbygoogle || []).push({});
+    } catch (e) {
+      console.warn("AdSense n'a pas pu initialiser ce bloc :", e);
+    }
+  });
   list.querySelectorAll('.match-row').forEach(b => b.onclick = () => selectMatch(b.dataset.id));
   icons_();
 }
@@ -141,11 +160,39 @@ function renderEmpty() {
   icons_();
 }
 
+let detailAdMatchClicks = 0;
+
 async function selectMatch(id) {
   state.selected = id;
   document.querySelectorAll('.match-row').forEach(b => b.classList.toggle('active', b.dataset.id === id));
   if (isMobile()) { $('#listPane').classList.add('hidden'); $('#detailPane').classList.remove('hidden'); $('#detailPane').classList.add('flex'); }
   const m = state.matches.find(x => x.id === id);
+
+  // Publicité du match : apparition à partir de la 3e sélection.
+  const detailAd = document.getElementById('detailAd');
+  const closeDetailAd = document.getElementById('closeDetailAd');
+
+  if (closeDetailAd && !closeDetailAd.dataset.bound) {
+    closeDetailAd.dataset.bound = 'true';
+    closeDetailAd.addEventListener('click', () => {
+      if (detailAd) {
+        detailAd.classList.add('hidden');
+        detailAd.setAttribute('aria-hidden', 'true');
+      }
+    });
+  }
+
+  if (detailAd && m) {
+    detailAdMatchClicks++;
+    if (detailAdMatchClicks % 3 === 0) {
+      detailAd.classList.remove('hidden');
+      detailAd.setAttribute('aria-hidden', 'false');
+    } else {
+      detailAd.classList.add('hidden');
+      detailAd.setAttribute('aria-hidden', 'true');
+    }
+  }
+
   renderDetail(m, null);
   if (!state.summaries[id]) {
     try { state.summaries[id] = await getJSON(`${API}/summary?event=${id}`); } catch { state.summaries[id] = {}; }
@@ -363,12 +410,19 @@ async function analyze(m) {
     console.log(JSON.stringify(json, null, 2));
     console.log("===== FIN REPONSE IA =====");
 
-    if (!r.ok || json.error) throw new Error(json.error || 'Erreur du service d\'analyse');
+    if (!r.ok || json.error) {
+      const error = new Error(json.error || 'Erreur du service d\'analyse');
+      error.code = json.code || null;
+      throw error;
+    }
     json.generatedAt = Date.now();
     state.analyses[m.id] = json;
     if (puter.auth.isSignedIn()) { try { await puter.kv.set('analysis_' + m.id, JSON.stringify(json)); } catch {} }
   } catch (e) {
-    state.analyses[m.id] = { error: e?.message || 'Erreur lors de l\'analyse' };
+    state.analyses[m.id] = {
+      error: e?.message || 'Erreur lors de l\'analyse',
+      code: e?.code || null
+    };
   }
   if (state.selected === m.id) { renderAnalyzeBtn(m); renderAnalysis(m); }
 }
@@ -414,10 +468,33 @@ function renderAnalysis(m) {
   }
 
   if (a.error) {
+    const quotaReached = a.code === 'DAILY_LIMIT_REACHED'
+      || /3 analyses gratuites du jour/i.test(a.error || '');
+
     box.innerHTML = `
     <section class="rounded-xl border border-red-500/40 bg-red-500/5 p-4 text-red-300">
-      ${esc(a.error)}
+      <p>${esc(a.error)}</p>
+      ${quotaReached ? `
+        <div class="mt-4 rounded-lg border border-line bg-panel p-3 text-gray-300">
+          <p class="mb-3 text-sm font-semibold">Publicité</p>
+          <ins class="adsbygoogle"
+               style="display:inline-block;width:320px;height:100px"
+               data-ad-client="ca-pub-8143082489700562"
+               data-ad-slot="8454879474"></ins>
+        </div>` : ''}
     </section>`;
+
+    if (quotaReached) {
+      const ad = box.querySelector('.adsbygoogle');
+      if (ad && !ad.dataset.adsbygoogleStatus) {
+        try {
+          (window.adsbygoogle = window.adsbygoogle || []).push({});
+        } catch (error) {
+          console.warn('Publicité AdSense indisponible :', error.message);
+        }
+      }
+    }
+
     return icons_();
   }
 

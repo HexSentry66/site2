@@ -37,6 +37,9 @@ tailwind.config={theme:{extend:{fontFamily:{sans:['Inter','system-ui','sans-seri
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
     <meta name="apple-mobile-web-app-title" content="Zouzoua">
     <!-- /puter-pwa -->
+
+  <!-- Google AdSense -->
+  <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-8143082489700562" crossorigin="anonymous"></script>
 </head>
 <body class="font-sans antialiased h-screen overflow-hidden">
 <div class="flex flex-col h-full">
@@ -78,6 +81,16 @@ tailwind.config={theme:{extend:{fontFamily:{sans:['Inter','system-ui','sans-seri
 
     <!-- Detail -->
     <main id="detailPane" class="hidden md:flex flex-1 min-w-0 flex-col min-h-0 bg-base">
+      <div id="detailAd" class="hidden px-4 pt-4" aria-label="Publicité">
+        <div class="flex justify-end mb-2">
+          <button id="closeDetailAd" type="button" class="text-xs text-gray-400 hover:text-white px-3 py-2 rounded-lg border border-line" aria-label="Masquer la publicité">Masquer la publicité ✕</button>
+        </div>
+        <ins class="adsbygoogle"
+             style="display:block; min-height:100px"
+             data-ad-format="autorelaxed"
+             data-ad-client="ca-pub-8143082489700562"
+             data-ad-slot="6734603694"></ins>
+      </div>
       <div id="detail" class="flex-1 overflow-y-auto scroll"></div>
     </main>
   </div>
