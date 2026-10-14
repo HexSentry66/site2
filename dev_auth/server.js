@@ -2,17 +2,17 @@ const express = require("express");
 const path = require("node:path");
 
 
-app.get("/ads.txt", (req, res) => {
-  res.type("text/plain");
-  res.sendFile(path.join(__dirname, "ads.txt"));
-});
-
-
 if (process.env.NODE_ENV !== "production") {
   require("dotenv").config({ path: path.join(__dirname, "secrets", ".env") });
 }
 
 const app = express();
+
+app.get("/ads.txt", (req, res) => {
+  res.type("text/plain");
+  res.sendFile(path.join(__dirname, "ads.txt"));
+});
+
 
 app.set('trust proxy', 1);
 

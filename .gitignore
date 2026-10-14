@@ -35,3 +35,4 @@ dev_auth/**/*test-backup*
 *.before-*
 *.test-backup.js
 *.backup.js
+dev_auth/cookies.txt
