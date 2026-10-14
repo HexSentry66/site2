@@ -9,3 +9,9 @@ server.*.backup*
 **/*.sqlite-wal
 **/*.sqlite-shm
 **/.env
+
+# Backups locaux
+production_backup/
+safety_backup_*/
+dev_auth/**/*.before-*
+dev_auth/migration_work_*/
