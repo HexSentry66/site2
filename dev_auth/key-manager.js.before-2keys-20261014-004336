@@ -1,0 +1,46 @@
+// Gestionnaire NVIDIA : round-robin dans un processus Node.js.
+const ENV_NAMES = [
+  "NVIDIA_API_KEY_1",
+  "NVIDIA_API_KEY_2",
+  "NVIDIA_API_KEY_3",
+  "NVIDIA_API_KEY_4",
+];
+
+let nextIndex = 0;
+let previousIndex = -1;
+
+function readKeys() {
+  const keys = ENV_NAMES.map((name) => {
+    const value = process.env[name];
+    return typeof value === "string" ? value.trim() : "";
+  });
+
+  if (keys.some((key) => !key)) {
+    throw new Error("Les quatre clés NVIDIA doivent être configurées.");
+  }
+
+  if (new Set(keys).size !== keys.length) {
+    throw new Error("Les quatre variables NVIDIA doivent contenir des clés distinctes.");
+  }
+
+  return keys;
+}
+
+function validateKeys() {
+  readKeys();
+}
+
+function getNextKey() {
+  const keys = readKeys();
+  let index = nextIndex;
+
+  if (index === previousIndex) {
+    index = (index + 1) % keys.length;
+  }
+
+  previousIndex = index;
+  nextIndex = (index + 1) % keys.length;
+  return keys[index];
+}
+
+module.exports = { validateKeys, getNextKey };

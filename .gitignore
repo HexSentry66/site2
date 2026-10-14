@@ -3,3 +3,9 @@ node_modules
 *.log
 app.*.backup*
 server.*.backup*
+/dev_auth/secrets/
+/dev_auth/data/
+**/*.sqlite
+**/*.sqlite-wal
+**/*.sqlite-shm
+**/.env

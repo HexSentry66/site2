@@ -1,0 +1,130 @@
+const express = require("express");
+const cors = require("cors");
+require("dotenv").config({ path: "./secrets/.env" });
+
+const app = express();
+
+app.use(cors());
+app.use(express.json());
+
+// Bloquer l'accès public aux données et fichiers internes.
+app.use((req, res, next) => {
+  const path = req.path;
+  if (
+    /^\/(data|secrets|node_modules|\.git)(\/|$)/i.test(path) ||
+    /^\/(server\.js|auth\.js|package\.json|package-lock\.json|install_login\.py)$/i.test(path) ||
+    /\.before-[^/]+$/i.test(path) ||
+    /\.sqlite(?:-wal|-shm)?$/i.test(path)
+  ) {
+    return res.sendStatus(404);
+  }
+  next();
+});
+app.use(express.static("."));
+
+const { attachAuth, enforceDailyQuota } = require("./auth");
+const requireAuth = attachAuth(app);
+
+const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
+const NVIDIA_MODEL = "openai/gpt-oss-20b";
+
+app.post("/analyze", requireAuth, enforceDailyQuota, async (req, res) => {
+  try {
+    const response = await fetch(NVIDIA_BASE_URL + "/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + process.env.NVIDIA_API_KEY,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: NVIDIA_MODEL,
+        messages: [
+          {
+            role: "system",
+            content: `Tu es un analyste football professionnel spécialisé dans les pronostics sportifs.
+
+Analyse uniquement les données fournies.
+Ne jamais inventer de statistiques absentes.
+
+Ton objectif est de sélectionner les pronostics les plus pertinents pour ce match.
+
+Tu dois choisir toi-même les marchés adaptés selon les informations disponibles.
+
+Ne force jamais un marché qui n'est pas suffisamment justifié.
+
+Réponds uniquement avec un JSON valide.
+
+Format obligatoire :
+
+{
+"resume":"Résumé professionnel du rapport de force entre les deux équipes.",
+
+"pronostics":[
+{
+"marche":"Nom du marché",
+"choix":"Pronostic sélectionné",
+"probabilite":"Pourcentage estimé",
+"confiance":"Faible|Moyenne|Élevée",
+"explication":"Explication basée uniquement sur les données disponibles."
+}
+],
+
+"bilan_final":"Synthèse finale des meilleures opportunités et des risques. Aucun pronostic n'est garanti."
+}
+
+Règles obligatoires :
+- Donner exactement 3 pronostics.
+- Classer les pronostics du plus intéressant au moins intéressant.
+- Utiliser uniquement les marchés réellement justifiés.
+- Ne jamais inventer de données.
+- Ne jamais donner de certitude absolue.
+- Répondre uniquement en JSON sans markdown.`
+
+          },
+          {
+            role: "user",
+            content: JSON.stringify(req.body.context)
+          }
+        ],
+        temperature: 0.6,
+        max_tokens: 4096
+      })
+    });
+
+    const data = await response.json();
+
+    console.log("===== REPONSE NVIDIA COMPLETE =====");
+    console.log(JSON.stringify(data, null, 2));
+    console.log("===== FIN REPONSE NVIDIA =====");
+
+    const content = data.choices?.[0]?.message?.content || "";
+
+    let result;
+    try {
+      const start = content.indexOf("{");
+      const end = content.lastIndexOf("}");
+
+      result = JSON.parse(content.slice(start, end + 1));
+
+    } catch (e) {
+      console.log("Erreur extraction JSON IA :", e.message);
+      return res.status(500).json({
+        error: "JSON IA invalide",
+        raw: content
+      });
+    }
+
+    console.log("===== JSON ENVOYE AU SITE =====");
+    console.log(JSON.stringify(result, null, 2));
+    console.log("===== FIN JSON ENVOYE =====");
+
+    res.json(result);
+
+  } catch (error) {
+    res.status(500).json({error:error.message});
+  }
+});
+
+app.listen(process.env.PORT || 3000, "0.0.0.0", () => {
+  console.log("Zouzoua local lancé sur http://localhost:3000");
+});
