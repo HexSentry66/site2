@@ -445,7 +445,7 @@ Réponds UNIQUEMENT avec un JSON valide (sans markdown) au format :
 }
 
 function renderAnalysis(m) {
-  const box = $('#analysis'); 
+  const box = $('#analysis');
   if (!box) return;
 
   const a = state.analyses[m.id];
@@ -484,8 +484,8 @@ function renderAnalysis(m) {
 
       overlay.innerHTML = `
         <section class="w-full max-w-md rounded-2xl border border-line bg-panel p-5 text-center text-white shadow-2xl">
-          <h2 id="zouzouaRewardAdTitle" class="mb-2 text-xl font-bold">Publicité de démonstration</h2>
-          <p class="mb-4 text-sm text-gray-300">Tes 3 analyses gratuites du jour sont utilisées.</p>
+          <h2 id="zouzouaRewardAdTitle" class="sr-only">Publicité</h2>
+
           <div class="flex min-h-[120px] items-center justify-center overflow-hidden rounded-lg bg-black/20 p-2">
             <ins class="adsbygoogle"
                  style="display:block; min-width:250px; min-height:100px"
@@ -494,11 +494,11 @@ function renderAnalysis(m) {
                  data-ad-format="auto"
                  data-full-width-responsive="true"></ins>
           </div>
-          <p id="zouzouaRewardCountdown" class="mt-4 text-lg font-bold">Patiente 5 secondes…</p>
-          <p id="zouzouaRewardStatus" class="mt-2 text-xs text-gray-400">Le bouton sera disponible après le compte à rebours.</p>
+
+          <p id="zouzouaRewardStatus" class="mt-3 text-xs text-gray-400">Patiente 5 secondes pour une nouvelle analyse.</p>
           <button id="zouzouaCloseRewardAd" type="button" disabled
                   class="mt-4 w-full rounded-lg border border-line px-4 py-3 font-semibold opacity-50 cursor-not-allowed">
-            Masquer la publicité (5)
+            Masquer (5)
           </button>
         </section>`;
 
@@ -528,8 +528,8 @@ function renderAnalysis(m) {
           const startData = await startResponse.json().catch(() => ({}));
 
           if (!startResponse.ok || !startData.sessionId) {
-            countdown.textContent = 'Simulation indisponible';
-            status.textContent = startData.error || 'Réessaie plus tard.';
+            countdown.textContent = '';
+            status.textContent = 'Réessaie plus tard.';
             closeButton.disabled = false;
             closeButton.textContent = 'Masquer';
             closeButton.classList.remove('opacity-50', 'cursor-not-allowed');
@@ -538,14 +538,14 @@ function renderAnalysis(m) {
 
           const rewardSessionId = startData.sessionId;
           for (let seconds = 5; seconds > 0; seconds--) {
-            countdown.textContent = `Patiente ${seconds} seconde${seconds > 1 ? 's' : ''}…`;
-            closeButton.textContent = `Masquer la publicité (${seconds})`;
+            status.textContent = `Patiente ${seconds} seconde${seconds > 1 ? 's' : ''} pour une nouvelle analyse.`;
+            closeButton.textContent = `Masquer (${seconds})`;
             await new Promise(resolve => setTimeout(resolve, 1000));
             if (!document.body.contains(overlay)) return;
           }
 
-          countdown.textContent = 'Simulation terminée';
-          status.textContent = 'Validation du crédit en cours…';
+          countdown.textContent = '';
+          status.textContent = 'Préparation de ta nouvelle analyse…';
 
           const claimResponse = await fetch('/api/reward-simulation/claim', {
             method: 'POST',
@@ -563,15 +563,15 @@ function renderAnalysis(m) {
             return;
           }
 
-          status.textContent = '1 crédit de démonstration ajouté. Tu peux masquer cette fenêtre.';
+          status.textContent = 'Tu peux lancer une nouvelle analyse.';
           closeButton.disabled = false;
-          closeButton.textContent = 'Masquer la publicité ✕';
+          closeButton.textContent = 'Masquer ✕';
           closeButton.classList.remove('opacity-50', 'cursor-not-allowed');
           closeButton.classList.add('hover:bg-white/10');
         } catch (error) {
           console.error('Erreur de simulation de récompense :', error);
-          countdown.textContent = 'Connexion indisponible';
-          status.textContent = 'Impossible de valider la simulation. Réessaie plus tard.';
+          countdown.textContent = '';
+          status.textContent = 'Connexion indisponible. Réessaie plus tard.';
           closeButton.disabled = false;
           closeButton.textContent = 'Masquer';
           closeButton.classList.remove('opacity-50', 'cursor-not-allowed');
@@ -583,7 +583,7 @@ function renderAnalysis(m) {
         overlay.remove();
         box.innerHTML = `
           <section class="rounded-xl border border-line bg-panel p-4 text-gray-300">
-            <p>Fenêtre de simulation fermée. Si le crédit a été validé, tu peux relancer ton analyse.</p>
+            <p>Tu peux maintenant lancer une nouvelle analyse.</p>
           </section>`;
         icons_();
       });
