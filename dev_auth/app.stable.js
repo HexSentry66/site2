@@ -527,19 +527,16 @@ function renderAnalysis(m) {
           });
           const startData = await startResponse.json().catch(() => ({}));
 
-          if (!startResponse.ok || startData.alreadyRewarded) {
-            countdown.textContent = startData.alreadyRewarded
-              ? 'Récompense du jour déjà utilisée'
-              : 'Simulation indisponible';
-            status.textContent = startData.alreadyRewarded
-              ? 'Tu as déjà reçu le crédit de simulation aujourd’hui.'
-              : (startData.error || 'Réessaie plus tard.');
+          if (!startResponse.ok || !startData.sessionId) {
+            countdown.textContent = 'Simulation indisponible';
+            status.textContent = startData.error || 'Réessaie plus tard.';
             closeButton.disabled = false;
             closeButton.textContent = 'Masquer';
             closeButton.classList.remove('opacity-50', 'cursor-not-allowed');
             return;
           }
 
+          const rewardSessionId = startData.sessionId;
           for (let seconds = 5; seconds > 0; seconds--) {
             countdown.textContent = `Patiente ${seconds} seconde${seconds > 1 ? 's' : ''}…`;
             closeButton.textContent = `Masquer la publicité (${seconds})`;
@@ -554,7 +551,7 @@ function renderAnalysis(m) {
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({})
+            body: JSON.stringify({ sessionId: rewardSessionId })
           });
           const claimData = await claimResponse.json().catch(() => ({}));
 

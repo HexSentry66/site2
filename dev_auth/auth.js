@@ -668,6 +668,7 @@ function attachAuth(app) {
     message: { error: 'Trop de tentatives. Réessaie dans une minute.' }
   });
 
+  // Les récompenses sont des crédits de démonstration, indépendants d'AdSense.
   app.post('/api/reward-simulation/start', requireAuth, rewardSimulationLimiter,
     asyncRoute(async (req, res) => {
       if (req.user.role === 'admin') {
@@ -675,48 +676,43 @@ function attachAuth(app) {
       }
 
       const userId = req.user.id;
-      const day = new Date().toISOString().slice(0, 10);
-
       const result = await transaction(async client => {
         await client.query(`
-          CREATE TABLE IF NOT EXISTS reward_simulation_daily (
+          CREATE TABLE IF NOT EXISTS reward_simulation_sessions (
+            id BIGSERIAL PRIMARY KEY,
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            reward_date DATE NOT NULL,
             started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            claimed_at TIMESTAMPTZ,
-            PRIMARY KEY (user_id, reward_date)
+            claimed_at TIMESTAMPTZ
           )
         `);
 
-        await client.query(`
-          ALTER TABLE reward_simulation_daily
-          ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        `);
-
-        const existing = await client.query(`
-          SELECT claimed_at FROM reward_simulation_daily
-          WHERE user_id = $1 AND reward_date = $2
+        // Une seule session non réclamée par compte à la fois.
+        const active = await client.query(`
+          SELECT id, claimed_at FROM reward_simulation_sessions
+          WHERE user_id = $1 AND claimed_at IS NULL
+          ORDER BY started_at DESC
+          LIMIT 1
           FOR UPDATE
-        `, [userId, day]);
+        `, [userId]);
 
-        if (existing.rows[0]?.claimed_at) return { alreadyRewarded: true };
+        if (active.rows.length) {
+          return { sessionId: active.rows[0].id };
+        }
 
-        await client.query(`
-          INSERT INTO reward_simulation_daily (user_id, reward_date, started_at)
-          VALUES ($1, $2, NOW())
-          ON CONFLICT (user_id, reward_date)
-          DO UPDATE SET started_at = NOW()
-          WHERE reward_simulation_daily.claimed_at IS NULL
-        `, [userId, day]);
+        const created = await client.query(`
+          INSERT INTO reward_simulation_sessions (user_id)
+          VALUES ($1)
+          RETURNING id
+        `, [userId]);
 
-        return { alreadyRewarded: false };
+        return { sessionId: created.rows[0].id };
       });
 
       res.set('Cache-Control', 'no-store');
       return res.json({
         ok: true,
         simulation: true,
-        alreadyRewarded: result.alreadyRewarded,
+        sessionId: result.sessionId,
         durationSeconds: 5,
         message: 'Simulation de récompense uniquement.'
       });
@@ -729,32 +725,30 @@ function attachAuth(app) {
         return res.json({ ok: true, simulation: true, credits: 0 });
       }
 
-      const userId = req.user.id;
-      const day = new Date().toISOString().slice(0, 10);
+      const sessionId = Number(req.body?.sessionId);
+      if (!Number.isSafeInteger(sessionId) || sessionId <= 0) {
+        return res.status(400).json({ error: 'Session de simulation invalide.' });
+      }
 
+      const userId = req.user.id;
       const result = await transaction(async client => {
         await client.query(`
-          CREATE TABLE IF NOT EXISTS reward_simulation_daily (
+          CREATE TABLE IF NOT EXISTS reward_simulation_sessions (
+            id BIGSERIAL PRIMARY KEY,
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            reward_date DATE NOT NULL,
             started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            claimed_at TIMESTAMPTZ,
-            PRIMARY KEY (user_id, reward_date)
+            claimed_at TIMESTAMPTZ
           )
         `);
 
-        await client.query(`
-          ALTER TABLE reward_simulation_daily
-          ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        `);
-
         const ticket = await client.query(`
-          SELECT started_at, claimed_at FROM reward_simulation_daily
-          WHERE user_id = $1 AND reward_date = $2
+          SELECT id, started_at, claimed_at
+          FROM reward_simulation_sessions
+          WHERE id = $1 AND user_id = $2
           FOR UPDATE
-        `, [userId, day]);
+        `, [sessionId, userId]);
 
-        if (!ticket.rows.length) return { status: 'not_started' };
+        if (!ticket.rows.length) return { status: 'not_found' };
         if (ticket.rows[0].claimed_at) return { status: 'already_claimed' };
 
         const elapsedMs = Date.now() - new Date(ticket.rows[0].started_at).getTime();
@@ -762,11 +756,14 @@ function attachAuth(app) {
           return { status: 'too_early' };
         }
 
-        await client.query(`
-          UPDATE reward_simulation_daily
+        const updated = await client.query(`
+          UPDATE reward_simulation_sessions
           SET claimed_at = NOW()
-          WHERE user_id = $1 AND reward_date = $2
-        `, [userId, day]);
+          WHERE id = $1 AND user_id = $2 AND claimed_at IS NULL
+          RETURNING id
+        `, [sessionId, userId]);
+
+        if (!updated.rowCount) return { status: 'already_claimed' };
 
         await client.query(`
           INSERT INTO reward_credits (user_id, credits)
@@ -780,11 +777,11 @@ function attachAuth(app) {
 
       res.set('Cache-Control', 'no-store');
 
-      if (result.status === 'not_started') {
-        return res.status(400).json({ error: 'Aucune simulation démarrée.' });
+      if (result.status === 'not_found') {
+        return res.status(404).json({ error: 'Session de simulation introuvable.' });
       }
       if (result.status === 'already_claimed') {
-        return res.status(409).json({ error: 'La récompense simulée du jour a déjà été réclamée.' });
+        return res.status(409).json({ error: 'Cette simulation a déjà été réclamée.' });
       }
       if (result.status === 'too_early') {
         return res.status(429).json({ error: 'Attends la fin des 5 secondes avant de réclamer le crédit.' });
