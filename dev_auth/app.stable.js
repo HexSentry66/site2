@@ -515,73 +515,42 @@ function renderAnalysis(m) {
       const countdown = overlay.querySelector('#zouzouaRewardCountdown');
       const status = overlay.querySelector('#zouzouaRewardStatus');
 
+      closeButton.disabled = true;
+      closeButton.classList.add('opacity-50', 'cursor-not-allowed');
+
       (async () => {
         try {
-          const startResponse = await fetch('/api/reward-simulation/start', {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({})
-          });
-          const startData = await startResponse.json().catch(() => ({}));
-
-          if (!startResponse.ok || !startData.sessionId) {
-            countdown.textContent = '';
-            status.textContent = 'Réessaie plus tard.';
-            closeButton.disabled = false;
-            closeButton.textContent = 'Masquer';
-            closeButton.classList.remove('opacity-50', 'cursor-not-allowed');
-            return;
-          }
-
-          const rewardSessionId = startData.sessionId;
           for (let seconds = 5; seconds > 0; seconds--) {
-            status.textContent = `Patiente ${seconds} seconde${seconds > 1 ? 's' : ''} pour une nouvelle analyse.`;
+            status.textContent = `Patiente ${seconds} seconde${seconds > 1 ? 's' : ''} pour le crédit de test.`;
             closeButton.textContent = `Masquer (${seconds})`;
             await new Promise(resolve => setTimeout(resolve, 1000));
             if (!document.body.contains(overlay)) return;
           }
 
           countdown.textContent = '';
-          status.textContent = 'Préparation de ta nouvelle analyse…';
+          status.textContent = 'Ajout du crédit de test…';
 
-          const claimController = new AbortController();
-          const claimTimeout = setTimeout(() => claimController.abort(), 12000);
+          const response = await fetch('/api/reward-simulation/test-credit', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+          });
+          const data = await response.json().catch(() => ({}));
 
-          let claimResponse;
-          try {
-            claimResponse = await fetch('/api/reward-simulation/claim', {
-              method: 'POST',
-              credentials: 'same-origin',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ sessionId: rewardSessionId }),
-              signal: claimController.signal
-            });
-          } finally {
-            clearTimeout(claimTimeout);
+          if (!response.ok || !data.ok) {
+            status.textContent = data.error || 'Le crédit de test n’a pas pu être ajouté.';
+          } else {
+            status.textContent = `Crédit de test ajouté. Solde : ${data.credits} crédit(s).`;
           }
-          const claimData = await claimResponse.json().catch(() => ({}));
-
-          if (!claimResponse.ok || !claimData.ok) {
-            status.textContent = claimData.error || 'Le crédit n’a pas pu être attribué.';
-            closeButton.disabled = false;
-            closeButton.textContent = 'Masquer';
-            closeButton.classList.remove('opacity-50', 'cursor-not-allowed');
-            return;
-          }
-
-          status.textContent = 'Tu peux lancer une nouvelle analyse.';
+        } catch (error) {
+          console.error('Erreur de crédit de test :', error);
+          status.textContent = 'Connexion indisponible. Réessaie plus tard.';
+        } finally {
           closeButton.disabled = false;
           closeButton.textContent = 'Masquer ✕';
           closeButton.classList.remove('opacity-50', 'cursor-not-allowed');
           closeButton.classList.add('hover:bg-white/10');
-        } catch (error) {
-          console.error('Erreur de simulation de récompense :', error);
-          countdown.textContent = '';
-          status.textContent = 'Connexion indisponible. Réessaie plus tard.';
-          closeButton.disabled = false;
-          closeButton.textContent = 'Masquer';
-          closeButton.classList.remove('opacity-50', 'cursor-not-allowed');
         }
       })();
 

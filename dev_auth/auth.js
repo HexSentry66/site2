@@ -796,6 +796,40 @@ function attachAuth(app) {
     })
   );
 
+
+  // TEST UNIQUEMENT : ajoute un crédit de démonstration.
+  app.post('/api/reward-simulation/test-credit', requireAuth, rewardSimulationLimiter,
+    asyncRoute(async (req, res) => {
+      const userId = req.user.id;
+      const credits = await transaction(async client => {
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS reward_credits (
+            user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            credits INTEGER NOT NULL DEFAULT 0 CHECK (credits >= 0)
+          )
+        `);
+
+        const result = await client.query(`
+          INSERT INTO reward_credits (user_id, credits)
+          VALUES ($1, 1)
+          ON CONFLICT (user_id)
+          DO UPDATE SET credits = reward_credits.credits + 1
+          RETURNING credits
+        `, [userId]);
+
+        return result.rows[0].credits;
+      });
+
+      res.set('Cache-Control', 'no-store');
+      return res.json({
+        ok: true,
+        simulation: true,
+        credits,
+        message: 'Crédit de démonstration ajouté.'
+      });
+    })
+  );
+
   return requireAuth;
 }
 
