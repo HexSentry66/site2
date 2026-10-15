@@ -49,6 +49,11 @@ app.get("/admin.html", requireAuth, (req, res) => {
 });
 
 // Ne servir que les fichiers publics explicitement autorisés.
+app.get("/googlefdce16d1dafef101.html", (req, res) => {
+  res.type("text/plain");
+  res.sendFile(path.join(__dirname, "googlefdce16d1dafef101.html"));
+});
+
 app.get("/", (req, res) => {
   res.set("Cache-Control", "no-store");
   res.sendFile(path.join(__dirname, "index.html"));
