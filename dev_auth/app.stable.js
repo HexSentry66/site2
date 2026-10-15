@@ -545,12 +545,21 @@ function renderAnalysis(m) {
           countdown.textContent = '';
           status.textContent = 'Préparation de ta nouvelle analyse…';
 
-          const claimResponse = await fetch('/api/reward-simulation/claim', {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionId: rewardSessionId })
-          });
+          const claimController = new AbortController();
+          const claimTimeout = setTimeout(() => claimController.abort(), 12000);
+
+          let claimResponse;
+          try {
+            claimResponse = await fetch('/api/reward-simulation/claim', {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ sessionId: rewardSessionId }),
+              signal: claimController.signal
+            });
+          } finally {
+            clearTimeout(claimTimeout);
+          }
           const claimData = await claimResponse.json().catch(() => ({}));
 
           if (!claimResponse.ok || !claimData.ok) {
