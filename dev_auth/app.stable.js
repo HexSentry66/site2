@@ -530,12 +530,21 @@ function renderAnalysis(m) {
           countdown.textContent = '';
           status.textContent = 'Ajout du crédit de test…';
 
-          const response = await fetch('/api/reward-simulation/test-credit', {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({})
-          });
+          const claimController = new AbortController();
+          const claimTimeout = setTimeout(() => claimController.abort(), 8000);
+
+          let response;
+          try {
+            response = await fetch('/api/reward-simulation/test-credit', {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({}),
+              signal: claimController.signal
+            });
+          } finally {
+            clearTimeout(claimTimeout);
+          }
           const data = await response.json().catch(() => ({}));
 
           if (!response.ok || !data.ok) {
