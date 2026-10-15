@@ -151,6 +151,34 @@ function renderList() {
   icons_();
 }
 
+/* ---------- Publicité au-dessus des détails du match ---------- */
+function showDetailAd() {
+  const ad = document.getElementById("detailAd");
+  if (!ad || ad.dataset.dismissed === "true") return;
+
+  ad.classList.remove("hidden");
+  ad.setAttribute("aria-hidden", "false");
+
+  if (!ad.dataset.initialized) {
+    try {
+      (window.adsbygoogle = window.adsbygoogle || []).push({});
+      ad.dataset.initialized = "true";
+    } catch (e) {
+      console.warn("AdSense détail indisponible :", e);
+    }
+  }
+}
+
+function hideDetailAd() {
+  const ad = document.getElementById("detailAd");
+  if (!ad) return;
+  ad.classList.add("hidden");
+  ad.setAttribute("aria-hidden", "true");
+  ad.dataset.dismissed = "true";
+}
+
+document.getElementById("closeDetailAd")?.addEventListener("click", hideDetailAd);
+
 /* ---------- Detail ---------- */
 function renderEmpty() {
   $('#detail').innerHTML = `<div class="h-full grid place-items-center p-10 text-center">
@@ -160,45 +188,15 @@ function renderEmpty() {
   icons_();
 }
 
-let detailAdMatchClicks = 0;
-
 async function selectMatch(id) {
   state.selected = id;
   document.querySelectorAll('.match-row').forEach(b => b.classList.toggle('active', b.dataset.id === id));
   if (isMobile()) { $('#listPane').classList.add('hidden'); $('#detailPane').classList.remove('hidden'); $('#detailPane').classList.add('flex'); }
   const m = state.matches.find(x => x.id === id);
-  // Afficher la publicité à chaque troisième sélection d'un match.
-  const detailAd = document.getElementById('detailAd');
-  const closeDetailAd = document.getElementById('closeDetailAd');
-
-  if (closeDetailAd && !closeDetailAd.dataset.bound) {
-    closeDetailAd.dataset.bound = 'true';
-    closeDetailAd.addEventListener('click', () => {
-      if (detailAd) {
-        detailAd.classList.add('hidden');
-        detailAd.setAttribute('aria-hidden', 'true');
-      }
-    });
-  }
-
-  if (detailAd) {
-    detailAdMatchClicks++;
-    if (detailAdMatchClicks % 3 === 0) {
-      detailAd.classList.remove('hidden');
-      detailAd.setAttribute('aria-hidden', 'false');
-      const ad = detailAd.querySelector('.adsbygoogle');
-      if (ad && !ad.dataset.adsbygoogleStatus) {
-        try {
-          (window.adsbygoogle = window.adsbygoogle || []).push({});
-        } catch (error) {
-          console.warn("Publicité AdSense indisponible :", error.message);
-        }
-      }
-    } else {
-      detailAd.classList.add('hidden');
-      detailAd.setAttribute('aria-hidden', 'true');
-    }
-  }
+  // Afficher la publicité à chaque sélection de match.
+  const detailAd = document.getElementById("detailAd");
+  if (detailAd) detailAd.dataset.dismissed = "false";
+  showDetailAd();
 
   renderDetail(m, null);
   if (!state.summaries[id]) {
