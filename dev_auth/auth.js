@@ -800,6 +800,10 @@ function attachAuth(app) {
   // TEST UNIQUEMENT : ajoute un crédit de démonstration.
   app.post('/api/reward-simulation/test-credit', requireAuth, rewardSimulationLimiter,
     asyncRoute(async (req, res) => {
+      if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Route réservée aux administrateurs.' });
+      }
+
       const userId = req.user.id;
       const credits = await transaction(async client => {
         await client.query(`
