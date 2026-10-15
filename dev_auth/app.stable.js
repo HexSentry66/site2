@@ -520,6 +520,33 @@ function renderAnalysis(m) {
 
       (async () => {
         try {
+          // Créer une session de récompense pour l'utilisateur connecté.
+          const startResponse = await fetch('/api/reward-simulation/start', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+          });
+
+          const startData = await startResponse.json().catch(() => ({}));
+
+          if (!startResponse.ok || !startData.ok) {
+            status.textContent = startData.error || 'Impossible de démarrer la récompense.';
+            return;
+          }
+
+          // Les administrateurs ont déjà leurs tickets illimités.
+          if (startData.alreadyRewarded) {
+            status.textContent = 'Les administrateurs disposent déjà de tickets illimités.';
+            return;
+          }
+
+          const sessionId = startData.sessionId;
+          if (!sessionId) {
+            status.textContent = 'Aucune session de récompense reçue du serveur.';
+            return;
+          }
+
           for (let seconds = 20; seconds > 0; seconds--) {
             status.textContent = `Patiente ${seconds} seconde${seconds > 1 ? 's' : ''} pour le crédit de test.`;
             closeButton.textContent = `Masquer (${seconds})`;
@@ -535,11 +562,11 @@ function renderAnalysis(m) {
 
           let response;
           try {
-            response = await fetch('/api/reward-simulation/test-credit', {
+            response = await fetch('/api/reward-simulation/claim', {
               method: 'POST',
               credentials: 'same-origin',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({}),
+              body: JSON.stringify({ sessionId }),
               signal: claimController.signal
             });
           } finally {
