@@ -493,10 +493,10 @@ function renderAnalysis(m) {
                  data-full-width-responsive="true"></ins>
           </div>
 
-          <p id="zouzouaRewardStatus" class="mt-3 text-xs text-gray-400">Patiente 5 secondes pour une nouvelle analyse.</p>
+          <p id="zouzouaRewardStatus" class="mt-3 text-xs text-gray-400">Patiente 20 secondes pour une nouvelle analyse.</p>
           <button id="zouzouaCloseRewardAd" type="button" disabled
                   class="mt-4 w-full rounded-lg border border-line px-4 py-3 font-semibold opacity-50 cursor-not-allowed">
-            Masquer (5)
+            Masquer (20)
           </button>
         </section>`;
 
@@ -520,18 +520,18 @@ function renderAnalysis(m) {
 
       (async () => {
         try {
-          for (let seconds = 5; seconds > 0; seconds--) {
+          for (let seconds = 20; seconds > 0; seconds--) {
             status.textContent = `Patiente ${seconds} seconde${seconds > 1 ? 's' : ''} pour le crédit de test.`;
             closeButton.textContent = `Masquer (${seconds})`;
             await new Promise(resolve => setTimeout(resolve, 1000));
             if (!document.body.contains(overlay)) return;
           }
 
-          countdown.textContent = '';
+          if (countdown) countdown.textContent = '';
           status.textContent = 'Ajout du crédit de test…';
 
           const claimController = new AbortController();
-          const claimTimeout = setTimeout(() => claimController.abort(), 8000);
+          const claimTimeout = setTimeout(() => claimController.abort(), 30000);
 
           let response;
           try {
