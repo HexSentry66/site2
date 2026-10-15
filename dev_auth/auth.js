@@ -658,6 +658,147 @@ function attachAuth(app) {
     })
   );
 
+
+  // Simulation de récompense : ce mécanisme n'atteste pas le visionnage d'une publicité réelle.
+  const rewardSimulationLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Trop de tentatives. Réessaie dans une minute.' }
+  });
+
+  app.post('/api/reward-simulation/start', requireAuth, rewardSimulationLimiter,
+    asyncRoute(async (req, res) => {
+      if (req.user.role === 'admin') {
+        return res.json({ ok: true, simulation: true, alreadyRewarded: true });
+      }
+
+      const userId = req.user.id;
+      const day = new Date().toISOString().slice(0, 10);
+
+      const result = await transaction(async client => {
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS reward_simulation_daily (
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            reward_date DATE NOT NULL,
+            started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            claimed_at TIMESTAMPTZ,
+            PRIMARY KEY (user_id, reward_date)
+          )
+        `);
+
+        await client.query(`
+          ALTER TABLE reward_simulation_daily
+          ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        `);
+
+        const existing = await client.query(`
+          SELECT claimed_at FROM reward_simulation_daily
+          WHERE user_id = $1 AND reward_date = $2
+          FOR UPDATE
+        `, [userId, day]);
+
+        if (existing.rows[0]?.claimed_at) return { alreadyRewarded: true };
+
+        await client.query(`
+          INSERT INTO reward_simulation_daily (user_id, reward_date, started_at)
+          VALUES ($1, $2, NOW())
+          ON CONFLICT (user_id, reward_date)
+          DO UPDATE SET started_at = NOW()
+          WHERE reward_simulation_daily.claimed_at IS NULL
+        `, [userId, day]);
+
+        return { alreadyRewarded: false };
+      });
+
+      res.set('Cache-Control', 'no-store');
+      return res.json({
+        ok: true,
+        simulation: true,
+        alreadyRewarded: result.alreadyRewarded,
+        durationSeconds: 5,
+        message: 'Simulation de récompense uniquement.'
+      });
+    })
+  );
+
+  app.post('/api/reward-simulation/claim', requireAuth, rewardSimulationLimiter,
+    asyncRoute(async (req, res) => {
+      if (req.user.role === 'admin') {
+        return res.json({ ok: true, simulation: true, credits: 0 });
+      }
+
+      const userId = req.user.id;
+      const day = new Date().toISOString().slice(0, 10);
+
+      const result = await transaction(async client => {
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS reward_simulation_daily (
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            reward_date DATE NOT NULL,
+            started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            claimed_at TIMESTAMPTZ,
+            PRIMARY KEY (user_id, reward_date)
+          )
+        `);
+
+        await client.query(`
+          ALTER TABLE reward_simulation_daily
+          ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        `);
+
+        const ticket = await client.query(`
+          SELECT started_at, claimed_at FROM reward_simulation_daily
+          WHERE user_id = $1 AND reward_date = $2
+          FOR UPDATE
+        `, [userId, day]);
+
+        if (!ticket.rows.length) return { status: 'not_started' };
+        if (ticket.rows[0].claimed_at) return { status: 'already_claimed' };
+
+        const elapsedMs = Date.now() - new Date(ticket.rows[0].started_at).getTime();
+        if (!Number.isFinite(elapsedMs) || elapsedMs < 5000) {
+          return { status: 'too_early' };
+        }
+
+        await client.query(`
+          UPDATE reward_simulation_daily
+          SET claimed_at = NOW()
+          WHERE user_id = $1 AND reward_date = $2
+        `, [userId, day]);
+
+        await client.query(`
+          INSERT INTO reward_credits (user_id, credits)
+          VALUES ($1, 1)
+          ON CONFLICT (user_id)
+          DO UPDATE SET credits = reward_credits.credits + 1
+        `, [userId]);
+
+        return { status: 'claimed' };
+      });
+
+      res.set('Cache-Control', 'no-store');
+
+      if (result.status === 'not_started') {
+        return res.status(400).json({ error: 'Aucune simulation démarrée.' });
+      }
+      if (result.status === 'already_claimed') {
+        return res.status(409).json({ error: 'La récompense simulée du jour a déjà été réclamée.' });
+      }
+      if (result.status === 'too_early') {
+        return res.status(429).json({ error: 'Attends la fin des 5 secondes avant de réclamer le crédit.' });
+      }
+
+      return res.json({
+        ok: true,
+        simulation: true,
+        credits: 1,
+        message: 'Crédit de démonstration ajouté.'
+      });
+    })
+  );
+
   return requireAuth;
 }
 

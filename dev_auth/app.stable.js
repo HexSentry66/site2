@@ -110,11 +110,12 @@ function renderList() {
     list.innerHTML = `<div class="p-10 text-center text-sm text-gray-400"><i data-lucide="calendar-x" class="w-7 h-7 mx-auto mb-3 text-gray-600"></i>Aucun match trouvé dans les prochaines 24h.</div>`;
     return icons_();
   }
-  let html = '', lastDay = '';
+  let html = '', lastDay = '', matchCount = 0;
   items.forEach(m => {
     const day = fmtDay(m.date);
     if (day !== lastDay) { html += `<div class="sticky top-0 z-10 bg-base/95 backdrop-blur px-4 py-2 text-[11px] uppercase tracking-wider text-gray-500 font-semibold border-b border-line">${esc(day)}</div>`; lastDay = day; }
     const live = m.state === 'in';
+    matchCount++;
     html += `<button data-id="${m.id}" class="match-row w-full text-left px-4 py-3 border-b border-l-2 border-l-transparent border-line hover:bg-panel transition ${state.selected === m.id ? 'active' : ''}">
       <div class="flex items-center justify-between mb-2">
         <span class="text-[11px] text-gray-400 truncate pr-2 flex items-center gap-1.5"><i data-lucide="trophy" class="w-3 h-3"></i>${esc(m.league)}</span>
@@ -126,8 +127,26 @@ function renderList() {
       </div>
       <div class="mt-2 text-[11px] text-gray-500 flex items-center gap-1 truncate"><i data-lucide="map-pin" class="w-3 h-3 shrink-0"></i>${esc(m.venue)}</div>
     </button>`;
+    if (matchCount % 5 === 0 && matchCount < items.length) {
+      html += `<div class="p-3 border-b border-line" aria-label="Publicité">
+        <ins class="adsbygoogle"
+             style="display:block; min-height:100px"
+             data-ad-format="fluid"
+             data-ad-layout-key="-fb+5w+4e-db+86"
+             data-ad-client="ca-pub-8143082489700562"
+             data-ad-slot="8237678040"></ins>
+      </div>`;
+    }
   });
   list.innerHTML = html;
+  list.querySelectorAll(".adsbygoogle").forEach(ad => {
+    if (ad.dataset.adsbygoogleStatus) return;
+    try {
+      (window.adsbygoogle = window.adsbygoogle || []).push({});
+    } catch (e) {
+      console.warn("AdSense n'a pas pu initialiser ce bloc :", e);
+    }
+  });
   list.querySelectorAll('.match-row').forEach(b => b.onclick = () => selectMatch(b.dataset.id));
   icons_();
 }
@@ -141,11 +160,46 @@ function renderEmpty() {
   icons_();
 }
 
+let detailAdMatchClicks = 0;
+
 async function selectMatch(id) {
   state.selected = id;
   document.querySelectorAll('.match-row').forEach(b => b.classList.toggle('active', b.dataset.id === id));
   if (isMobile()) { $('#listPane').classList.add('hidden'); $('#detailPane').classList.remove('hidden'); $('#detailPane').classList.add('flex'); }
   const m = state.matches.find(x => x.id === id);
+  // Afficher la publicité à chaque troisième sélection d'un match.
+  const detailAd = document.getElementById('detailAd');
+  const closeDetailAd = document.getElementById('closeDetailAd');
+
+  if (closeDetailAd && !closeDetailAd.dataset.bound) {
+    closeDetailAd.dataset.bound = 'true';
+    closeDetailAd.addEventListener('click', () => {
+      if (detailAd) {
+        detailAd.classList.add('hidden');
+        detailAd.setAttribute('aria-hidden', 'true');
+      }
+    });
+  }
+
+  if (detailAd) {
+    detailAdMatchClicks++;
+    if (detailAdMatchClicks % 3 === 0) {
+      detailAd.classList.remove('hidden');
+      detailAd.setAttribute('aria-hidden', 'false');
+      const ad = detailAd.querySelector('.adsbygoogle');
+      if (ad && !ad.dataset.adsbygoogleStatus) {
+        try {
+          (window.adsbygoogle = window.adsbygoogle || []).push({});
+        } catch (error) {
+          console.warn("Publicité AdSense indisponible :", error.message);
+        }
+      }
+    } else {
+      detailAd.classList.add('hidden');
+      detailAd.setAttribute('aria-hidden', 'true');
+    }
+  }
+
   renderDetail(m, null);
   if (!state.summaries[id]) {
     try { state.summaries[id] = await getJSON(`${API}/summary?event=${id}`); } catch { state.summaries[id] = {}; }
@@ -413,9 +467,136 @@ function renderAnalysis(m) {
   }
 
   if (a.error) {
+    const quotaReached =
+      a.code === 'DAILY_LIMIT_REACHED' ||
+      /3 analyses gratuites du jour|limite des analyses gratuites|limite quotidienne/i.test(a.error || '');
+
+    if (quotaReached) {
+      const overlayId = 'zouzouaRewardAdOverlay';
+      document.getElementById(overlayId)?.remove();
+
+      const overlay = document.createElement('div');
+      overlay.id = overlayId;
+      overlay.className = 'fixed inset-0 z-[100] flex items-center justify-center bg-black/95 p-4';
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      overlay.setAttribute('aria-labelledby', 'zouzouaRewardAdTitle');
+
+      overlay.innerHTML = `
+        <section class="w-full max-w-md rounded-2xl border border-line bg-panel p-5 text-center text-white shadow-2xl">
+          <h2 id="zouzouaRewardAdTitle" class="mb-2 text-xl font-bold">Publicité de démonstration</h2>
+          <p class="mb-4 text-sm text-gray-300">Tes 3 analyses gratuites du jour sont utilisées.</p>
+          <div class="flex min-h-[120px] items-center justify-center overflow-hidden rounded-lg bg-black/20 p-2">
+            <ins class="adsbygoogle"
+                 style="display:block; min-width:250px; min-height:100px"
+                 data-ad-client="ca-pub-8143082489700562"
+                 data-ad-slot="1733558459"
+                 data-ad-format="auto"
+                 data-full-width-responsive="true"></ins>
+          </div>
+          <p id="zouzouaRewardCountdown" class="mt-4 text-lg font-bold">Patiente 5 secondes…</p>
+          <p id="zouzouaRewardStatus" class="mt-2 text-xs text-gray-400">Le bouton sera disponible après le compte à rebours.</p>
+          <button id="zouzouaCloseRewardAd" type="button" disabled
+                  class="mt-4 w-full rounded-lg border border-line px-4 py-3 font-semibold opacity-50 cursor-not-allowed">
+            Masquer la publicité (5)
+          </button>
+        </section>`;
+
+      document.body.appendChild(overlay);
+
+      const rewardAd = overlay.querySelector('.adsbygoogle');
+      if (rewardAd && !rewardAd.dataset.adsbygoogleStatus) {
+        try {
+          (window.adsbygoogle = window.adsbygoogle || []).push({});
+        } catch (error) {
+          console.warn('Annonce AdSense indisponible :', error.message);
+        }
+      }
+
+      const closeButton = overlay.querySelector('#zouzouaCloseRewardAd');
+      const countdown = overlay.querySelector('#zouzouaRewardCountdown');
+      const status = overlay.querySelector('#zouzouaRewardStatus');
+
+      (async () => {
+        try {
+          const startResponse = await fetch('/api/reward-simulation/start', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+          });
+          const startData = await startResponse.json().catch(() => ({}));
+
+          if (!startResponse.ok || startData.alreadyRewarded) {
+            countdown.textContent = startData.alreadyRewarded
+              ? 'Récompense du jour déjà utilisée'
+              : 'Simulation indisponible';
+            status.textContent = startData.alreadyRewarded
+              ? 'Tu as déjà reçu le crédit de simulation aujourd’hui.'
+              : (startData.error || 'Réessaie plus tard.');
+            closeButton.disabled = false;
+            closeButton.textContent = 'Masquer';
+            closeButton.classList.remove('opacity-50', 'cursor-not-allowed');
+            return;
+          }
+
+          for (let seconds = 5; seconds > 0; seconds--) {
+            countdown.textContent = `Patiente ${seconds} seconde${seconds > 1 ? 's' : ''}…`;
+            closeButton.textContent = `Masquer la publicité (${seconds})`;
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            if (!document.body.contains(overlay)) return;
+          }
+
+          countdown.textContent = 'Simulation terminée';
+          status.textContent = 'Validation du crédit en cours…';
+
+          const claimResponse = await fetch('/api/reward-simulation/claim', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+          });
+          const claimData = await claimResponse.json().catch(() => ({}));
+
+          if (!claimResponse.ok || !claimData.ok) {
+            status.textContent = claimData.error || 'Le crédit n’a pas pu être attribué.';
+            closeButton.disabled = false;
+            closeButton.textContent = 'Masquer';
+            closeButton.classList.remove('opacity-50', 'cursor-not-allowed');
+            return;
+          }
+
+          status.textContent = '1 crédit de démonstration ajouté. Tu peux masquer cette fenêtre.';
+          closeButton.disabled = false;
+          closeButton.textContent = 'Masquer la publicité ✕';
+          closeButton.classList.remove('opacity-50', 'cursor-not-allowed');
+          closeButton.classList.add('hover:bg-white/10');
+        } catch (error) {
+          console.error('Erreur de simulation de récompense :', error);
+          countdown.textContent = 'Connexion indisponible';
+          status.textContent = 'Impossible de valider la simulation. Réessaie plus tard.';
+          closeButton.disabled = false;
+          closeButton.textContent = 'Masquer';
+          closeButton.classList.remove('opacity-50', 'cursor-not-allowed');
+        }
+      })();
+
+      closeButton.addEventListener('click', () => {
+        if (closeButton.disabled) return;
+        overlay.remove();
+        box.innerHTML = `
+          <section class="rounded-xl border border-line bg-panel p-4 text-gray-300">
+            <p>Fenêtre de simulation fermée. Si le crédit a été validé, tu peux relancer ton analyse.</p>
+          </section>`;
+        icons_();
+      });
+
+      return icons_();
+    }
+
     box.innerHTML = `
     <section class="rounded-xl border border-red-500/40 bg-red-500/5 p-4 text-red-300">
-      ${esc(a.error)}
+      <p>${esc(a.error)}</p>
     </section>`;
     return icons_();
   }
