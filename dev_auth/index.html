@@ -177,6 +177,69 @@ ins.adsbygoogle[data-ad-status="unfilled"] {
   </div>
 </div>
 
+
+<!-- zouzoua-anchor-close-scroll -->
+<script>
+(function () {
+  let anchorWasVisible = false;
+  let scheduled = false;
+
+  function googleAnchorVisible() {
+    return [...document.querySelectorAll('iframe')].some(function (frame) {
+      const src = frame.getAttribute('src') || '';
+      if (!/googleads|doubleclick\.net|googlesyndication\.com/i.test(src)) {
+        return false;
+      }
+
+      let node = frame;
+      while (node && node !== document.body) {
+        const style = getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+
+        if (
+          style.position === 'fixed' &&
+          rect.height > 30 &&
+          rect.bottom >= window.innerHeight - 10 &&
+          rect.top < window.innerHeight
+        ) {
+          return true;
+        }
+        node = node.parentElement;
+      }
+      return false;
+    });
+  }
+
+  function checkAnchor() {
+    scheduled = false;
+    const visible = googleAnchorVisible();
+
+    if (anchorWasVisible && !visible) {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    anchorWasVisible = visible;
+  }
+
+  new MutationObserver(function () {
+    if (!scheduled) {
+      scheduled = true;
+      requestAnimationFrame(checkAnchor);
+    }
+  }).observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['style', 'class', 'src']
+  });
+
+  window.addEventListener('load', function () {
+    setTimeout(checkAnchor, 1500);
+  });
+})();
+</script>
+<!-- /zouzoua-anchor-close-scroll -->
+
 <script type="module" src="app.stable.js"></script>
 </body>
 </html>
