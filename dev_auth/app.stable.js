@@ -460,6 +460,10 @@ async function analyze(m) {
           throw new Error(status.error || 'Impossible de consulter le cache.');
         }
 
+        if (status.error) {
+          throw new Error(status.error);
+        }
+
         if (status.ready && status.result) {
           readyResult = status.result;
           readyResult.generatedAt = status.generatedAt

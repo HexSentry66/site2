@@ -109,9 +109,17 @@ async function ensureMatchAnalysesTable() {
       status TEXT NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'processing', 'ready', 'error')),
       generated_at TIMESTAMPTZ,
+      claim_token TEXT,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+
+  // Migration sans suppression des analyses existantes.
+  await analysisQuery(`
+    ALTER TABLE match_analyses
+    ADD COLUMN IF NOT EXISTS claim_token TEXT
+  `);
+
   console.log("Stockage des analyses de matchs prêt.");
 }
 
@@ -273,16 +281,19 @@ async function precomputeUpcomingMatches() {
       const away = competitors.find(t => t.homeAway === "away") || competitors[1];
       const matchText =
         `${home?.team?.displayName || "Domicile"} vs ${away?.team?.displayName || "Extérieur"}`;
+      const claimToken = require("crypto").randomUUID();
 
       const claim = await analysisQuery(`
         INSERT INTO match_analyses
-          (event_id, match_text, competition, match_date, status, updated_at)
-        VALUES ($1, $2, $3, $4, 'processing', NOW())
+          (event_id, match_text, competition, match_date, status,
+           claim_token, updated_at)
+        VALUES ($1, $2, $3, $4, 'processing', $5, NOW())
         ON CONFLICT (event_id) DO UPDATE SET
           match_text = EXCLUDED.match_text,
           competition = EXCLUDED.competition,
           match_date = EXCLUDED.match_date,
           status = 'processing',
+          claim_token = EXCLUDED.claim_token,
           updated_at = NOW()
         WHERE match_analyses.status <> 'ready'
           AND (
@@ -301,7 +312,8 @@ async function precomputeUpcomingMatches() {
         id,
         matchText,
         competition.name || competition.league?.name || "Football",
-        event.date || ""
+        event.date || "",
+        claimToken
       ]);
 
       // Déjà prêt, en cours, ou en attente du délai de nouvelle tentative :
@@ -317,7 +329,7 @@ async function precomputeUpcomingMatches() {
         const context = espnEventContext(event, summary);
         const result = await generateFootballAnalysis(context);
 
-        await analysisQuery(`
+        const saved = await analysisQuery(`
           UPDATE match_analyses
           SET context = $2::jsonb,
               result = $3::jsonb,
@@ -325,15 +337,23 @@ async function precomputeUpcomingMatches() {
               generated_at = NOW(),
               updated_at = NOW()
           WHERE event_id = $1
-        `, [id, JSON.stringify(context), JSON.stringify(result)]);
+            AND status = 'processing'
+            AND claim_token = $4
+        `, [id, JSON.stringify(context), JSON.stringify(result), claimToken]);
 
-        console.log("Analyse pré-calculée :", id, matchText);
+        if (saved.rowCount) {
+          console.log("Analyse pré-calculée :", id, matchText);
+        } else {
+          console.warn("Résultat pré-calculé ignoré : réservation perdue pour", id);
+        }
       } catch (error) {
         await analysisQuery(`
           UPDATE match_analyses
           SET status = 'error', updated_at = NOW()
-          WHERE event_id = $1 AND status = 'processing'
-        `, [id]).catch(() => {});
+          WHERE event_id = $1
+            AND status = 'processing'
+            AND claim_token = $2
+        `, [id, claimToken]).catch(() => {});
 
         console.error("Pré-calcul impossible pour", id, error.message);
       }
@@ -350,15 +370,53 @@ async function precomputeUpcomingMatches() {
   }
 }
 
-// Une demande utilisateur consulte le cache : elle ne génère jamais une analyse.
+// Génération à la demande : le résultat est partagé entre tous les utilisateurs.
+async function runOnDemandAnalysis(matchId, context, claimToken) {
+  try {
+    const result = await generateFootballAnalysis(context);
+
+    const saved = await analysisQuery(`
+      UPDATE match_analyses
+      SET context = $2::jsonb,
+          result = $3::jsonb,
+          status = 'ready',
+          generated_at = NOW(),
+          updated_at = NOW()
+      WHERE event_id = $1
+        AND status = 'processing'
+        AND claim_token = $4
+    `, [matchId, JSON.stringify(context), JSON.stringify(result), claimToken]);
+
+    if (saved.rowCount) {
+      console.log("Analyse à la demande enregistrée :", matchId);
+    } else {
+      console.warn("Résultat non enregistré : réservation perdue pour", matchId);
+    }
+  } catch (error) {
+    console.error("Analyse à la demande impossible :", matchId, error.message);
+
+    try {
+      await analysisQuery(`
+        UPDATE match_analyses
+        SET status = 'error', updated_at = NOW()
+        WHERE event_id = $1
+          AND status = 'processing'
+          AND claim_token = $2
+      `, [matchId, claimToken]);
+    } catch (dbError) {
+      console.error("Enregistrement de l'erreur impossible :", dbError.message);
+    }
+  }
+}
+
 app.post("/analyze", requireAuth, enforceDailyQuota, async (req, res) => {
   const context = req.body?.context || {};
   const auditId = await recordAnalysisStart(req.user.id, context);
-  const matchId = String(req.body?.matchId || "").replace(/\D/g, "");
+  const matchId = String(req.body?.matchId || "");
 
-  if (!matchId) {
+  if (!/^\d+$/.test(matchId)) {
     await finishAnalysisEvent(auditId, "error");
-    return res.status(400).json({ error: "Identifiant du match manquant." });
+    return res.status(400).json({ error: "Identifiant du match invalide." });
   }
 
   try {
@@ -368,29 +426,66 @@ app.post("/analyze", requireAuth, enforceDailyQuota, async (req, res) => {
       WHERE event_id = $1
     `, [matchId]);
 
-    if (cached.rows[0]?.status === "ready" && cached.rows[0]?.result) {
+    const row = cached.rows[0];
+
+    if (row?.status === "ready" && row.result) {
       await finishAnalysisEvent(auditId, "success");
-      return res.json(cached.rows[0].result);
+      return res.json(row.result);
     }
 
-    // Une analyse en préparation n'est pas un échec.
-    // L'événement d'audit reste en attente.
+    // Réservation atomique avec jeton unique pour protéger le résultat.
+    // Une réservation bloquée depuis plus de 20 minutes peut être reprise.
+    const claimToken = require("crypto").randomUUID();
+    const claim = await analysisQuery(`
+      INSERT INTO match_analyses
+        (event_id, match_text, competition, match_date, context,
+         status, claim_token, updated_at)
+      VALUES ($1, $2, $3, $4, $5::jsonb, 'processing', $6, NOW())
+      ON CONFLICT (event_id) DO UPDATE SET
+        match_text = EXCLUDED.match_text,
+        competition = EXCLUDED.competition,
+        match_date = EXCLUDED.match_date,
+        context = EXCLUDED.context,
+        status = 'processing',
+        claim_token = EXCLUDED.claim_token,
+        updated_at = NOW()
+      WHERE match_analyses.status <> 'ready'
+        AND (
+          match_analyses.status <> 'processing'
+          OR match_analyses.updated_at < NOW() - INTERVAL '20 minutes'
+        )
+      RETURNING event_id
+    `, [
+      matchId,
+      String(context.match || `Match ${matchId}`).slice(0, 500),
+      String(context.championnat || "Football").slice(0, 200),
+      String(context.date || ""),
+      JSON.stringify(context),
+      claimToken
+    ]);
+
+    if (claim.rowCount > 0) {
+      void runOnDemandAnalysis(matchId, context, claimToken);
+      console.log("Analyse à la demande démarrée :", matchId);
+    } else {
+      console.log("Analyse déjà en cours ou prête :", matchId);
+    }
+
     return res.status(202).json({
       pending: true,
       matchId,
       auditId,
-      message: "Cette analyse est encore en préparation."
+      message: "Analyse en préparation. Le résultat sera partagé dès qu'il sera prêt."
     });
   } catch (error) {
     await finishAnalysisEvent(auditId, "error");
-    console.error("Lecture du cache d'analyse impossible :", error.message);
+    console.error("Demande d'analyse impossible :", error.message);
     return res.status(503).json({
       error: "Le stockage des analyses est temporairement indisponible."
     });
   }
 });
 
-// Clôture sécurisée d'un événement d'audit appartenant à l'utilisateur connecté.
 app.post("/api/analysis/audit/:id/finish", requireAuth, async (req, res) => {
   const idText = String(req.params.id || "");
   const status = req.body?.status;
@@ -430,11 +525,20 @@ app.get("/api/analysis/:id", requireAuth, async (req, res) => {
     `, [id]);
 
     const row = cached.rows[0];
+
     if (row?.status === "ready" && row.result) {
       return res.json({
         ready: true,
         result: row.result,
         generatedAt: row.generated_at
+      });
+    }
+
+    if (row?.status === "error") {
+      return res.json({
+        ready: false,
+        pending: false,
+        error: "La génération de l'analyse a échoué. Tu peux réessayer."
       });
     }
 
