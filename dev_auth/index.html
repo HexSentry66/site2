@@ -157,9 +157,15 @@ ins.adsbygoogle[data-ad-status="unfilled"] {
     <form id="authForm" class="space-y-4">
       <div>
         <label for="authPhone" class="block text-sm mb-2">Numéro de téléphone</label>
-        <input id="authPhone" name="phone" type="tel" autocomplete="tel" required
-          placeholder="+2250700000000"
-          class="w-full h-11 rounded-lg bg-base border border-line px-3 text-sm outline-none focus:border-accent">
+        <div class="flex h-11 overflow-hidden rounded-lg border border-line bg-base focus-within:border-accent">
+          <span class="flex items-center border-r border-line px-3 text-sm text-gray-400" aria-label="Indicatif Côte d’Ivoire">+225</span>
+          <input id="authPhone" name="phone" type="tel" inputmode="numeric"
+            autocomplete="tel-national" required maxlength="10" minlength="10"
+            pattern="[0-9]{10}" placeholder="0700000000"
+            aria-describedby="authPhoneHelp"
+            class="min-w-0 flex-1 bg-transparent px-3 text-sm outline-none">
+        </div>
+        <p id="authPhoneHelp" class="mt-1 text-xs text-gray-400">Saisis les 10 chiffres de ton numéro, sans +225.</p>
       </div>
       <div>
         <label for="authPassword" class="block text-sm mb-2">Mot de passe</label>

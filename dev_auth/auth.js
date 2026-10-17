@@ -295,14 +295,45 @@ function asyncRoute(handler) {
   return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 }
 
+function normalizeIvorianPhone(value) {
+  const raw = String(value || '').replace(/[\s().-]/g, '');
+  let national;
+
+  if (raw.startsWith('+225')) {
+    national = raw.slice(4);
+  } else if (raw.startsWith('225')) {
+    national = raw.slice(3);
+  } else {
+    national = raw;
+  }
+
+  if (!/^\d{10}$/.test(national)) return null;
+
+  return {
+    national,
+    canonical: `+225${national}`
+  };
+}
+
+function phoneLookupCandidates(national) {
+  const candidates = [
+    `+225${national}`,
+    `225${national}`,
+    national
+  ];
+
+  return [...new Set(candidates)];
+}
+
 function attachAuth(app) {
   app.post('/api/register', authLimiter, asyncRoute(async (req, res) => {
-    const phone = String(req.body?.phone || '').replace(/[\s().-]/g, '');
+    const normalizedPhone = normalizeIvorianPhone(req.body?.phone);
+    const phone = normalizedPhone?.canonical;
     const password = req.body?.password;
 
-    if (!/^\+?[1-9]\d{7,14}$/.test(phone)) {
+    if (!normalizedPhone) {
       return res.status(400).json({
-        error: 'Entre un numéro international valide, par exemple +2250700000000.'
+        error: 'Entre les 10 chiffres valides de ton numéro ivoirien.'
       });
     }
     if (typeof password !== 'string' || password.length < 8 || password.length > 128) {
@@ -312,6 +343,16 @@ function attachAuth(app) {
     }
 
     try {
+      const existing = await query(
+        'SELECT id FROM users WHERE phone = ANY($1::text[]) LIMIT 1',
+        [phoneLookupCandidates(normalizedPhone.national)]
+      );
+      if (existing.rows.length) {
+        return res.status(409).json({
+          error: 'Ce numéro possède déjà un compte.'
+        });
+      }
+
       const hash = await bcrypt.hash(password, 12);
       const result = await query(`
         INSERT INTO users (phone, password_hash)
@@ -336,10 +377,10 @@ function attachAuth(app) {
   }));
 
   app.post('/api/login', authLimiter, asyncRoute(async (req, res) => {
-    const phone = String(req.body?.phone || '').replace(/[\s().-]/g, '');
+    const normalizedPhone = normalizeIvorianPhone(req.body?.phone);
     const password = req.body?.password;
 
-    if (!/^\+?[1-9]\d{7,14}$/.test(phone) ||
+    if (!normalizedPhone ||
         typeof password !== 'string' || password.length > 128) {
       return res.status(400).json({
         error: 'Numéro ou mot de passe invalide.'
@@ -350,8 +391,8 @@ function attachAuth(app) {
       const result = await query(`
         SELECT id, phone, password_hash, suspended
         FROM users
-        WHERE phone = $1
-      `, [phone]);
+        WHERE phone = ANY($1::text[])
+      `, [phoneLookupCandidates(normalizedPhone.national)]);
       const user = result.rows[0];
       const valid = user && await bcrypt.compare(password, user.password_hash);
 

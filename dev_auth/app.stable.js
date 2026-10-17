@@ -811,7 +811,7 @@ async function initAuth() {
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          phone: $('#authPhone').value.trim(),
+          phone: '+225' + $('#authPhone').value.replace(/\D/g, ''),
           password: $('#authPassword').value
         })
       });
