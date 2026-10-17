@@ -39,6 +39,29 @@ tailwind.config={theme:{extend:{fontFamily:{sans:['Inter','system-ui','sans-seri
     <!-- /puter-pwa -->
   <!-- Google AdSense -->
   <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-8143082489700562" crossorigin="anonymous"></script>
+
+<style id="hide-unfilled-ads">
+/* Masquer les blocs AdSense sans annonce */
+ins.adsbygoogle[data-ad-status="unfilled"] {
+  display: none !important;
+}
+
+/* Masquer le conteneur In-feed lorsqu'il est vide */
+#matchList [aria-label="Publicité"]:has(ins.adsbygoogle[data-ad-status="unfilled"]) {
+  display: none !important;
+}
+
+/* Masquer le conteneur de publicité dans le détail du match */
+#detailAd:has(ins.adsbygoogle[data-ad-status="unfilled"]) {
+  display: none !important;
+}
+
+/* Autres conteneurs publicitaires explicitement identifiés */
+[aria-label="Publicité"]:has(ins.adsbygoogle[data-ad-status="unfilled"]) {
+  display: none !important;
+}
+</style>
+
 </head>
 <body class="font-sans antialiased h-screen overflow-hidden">
 <div id="appShell" class="flex flex-col h-full">
