@@ -313,15 +313,13 @@ function renderEmpty() {
   icons_();
 }
 
-let detailAdMatchClicks = 0;
-
 async function selectMatch(id) {
   state.selected = id;
   document.querySelectorAll('.match-row').forEach(b => b.classList.toggle('active', b.dataset.id === id));
   if (isMobile()) { $('#listPane').classList.add('hidden'); $('#detailPane').classList.remove('hidden'); $('#detailPane').classList.add('flex'); }
   const m = state.matches.find(x => x.id === id);
 
-  // Publicité du match : apparition à partir de la 3e sélection.
+  // Publicité Multiplex : affichée à chaque sélection de match.
   const detailAd = document.getElementById('detailAd');
   const closeDetailAd = document.getElementById('closeDetailAd');
 
@@ -336,13 +334,16 @@ async function selectMatch(id) {
   }
 
   if (detailAd && m) {
-    detailAdMatchClicks++;
-    if (detailAdMatchClicks % 3 === 0) {
-      detailAd.classList.remove('hidden');
-      detailAd.setAttribute('aria-hidden', 'false');
-    } else {
-      detailAd.classList.add('hidden');
-      detailAd.setAttribute('aria-hidden', 'true');
+    detailAd.classList.remove('hidden');
+    detailAd.setAttribute('aria-hidden', 'false');
+
+    const ad = detailAd.querySelector('.adsbygoogle');
+    if (ad && !ad.dataset.adsbygoogleStatus) {
+      try {
+        (window.adsbygoogle = window.adsbygoogle || []).push({});
+      } catch (error) {
+        console.warn('Publicité Multiplex indisponible :', error.message);
+      }
     }
   }
 
