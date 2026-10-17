@@ -132,9 +132,9 @@ function renderList() {
         <ins class="adsbygoogle"
              style="display:block; min-height:100px"
              data-ad-format="fluid"
-             data-ad-layout-key="-fb+5w+4e-db+86"
+             data-ad-layout-key="-al+bk-2f-53+ik"
              data-ad-client="ca-pub-8143082489700562"
-             data-ad-slot="8237678040"></ins>
+             data-ad-slot="1599955804"></ins>
       </div>`;
     }
   });
