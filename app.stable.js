@@ -1,6 +1,7 @@
 import { createIcons, icons } from 'https://cdn.jsdelivr.net/npm/lucide@latest/+esm';
 
 const API = 'https://site.api.espn.com/apis/site/v2/sports/soccer/all';
+const LOCAL_API = '/api';
 // Adresse du service d'analyse privé (utilise VOTRE clé API, stockée côté serveur uniquement)
 const ANALYZE_URL = 'https://zouzoua-pronostic.onrender.com';
 const state = { matches: [], selected: null, summaries: {}, analyses: {}, filter: '', league: '' };
@@ -70,27 +71,179 @@ function parseEvent(ev) {
 
 async function loadMatches() {
   const list = $('#matchList');
-  list.innerHTML = Array.from({ length: 8 }, () => `<div class="p-4 border-b border-line"><div class="skel h-3 w-24 mb-3"></div><div class="skel h-4 w-3/4 mb-2"></div><div class="skel h-4 w-2/3"></div></div>`).join('');
+
+  if (!list) {
+    console.error('Zouzoua: #matchList introuvable dans index.html');
+    return;
+  }
+
+  list.innerHTML = Array.from({ length: 8 }, () =>
+    `<div class="p-4 border-b border-line">
+      <div class="skel h-3 w-24 mb-3"></div>
+      <div class="skel h-4 w-3/4 mb-2"></div>
+      <div class="skel h-4 w-2/3"></div>
+    </div>`
+  ).join('');
+
   $('#refreshBtn svg')?.classList.add('spin');
+
   try {
-    const now = new Date(); const days = [-1, 0, 1].map(o => { const d = new Date(now); d.setDate(d.getDate() + o); return ymd(d); });
-    const res = await Promise.allSettled(days.map(d => getJSON(`${API}/scoreboard?dates=${d}`)));
+    const now = new Date();
+
+    /*
+     * On récupère les matchs d'hier, aujourd'hui et demain.
+     * ESPN accepte directement YYYYMMDD.
+     */
+    const days = [-1, 0, 1].map(offset => {
+      const d = new Date(now);
+      d.setDate(d.getDate() + offset);
+      return ymd(d);
+    });
+
+    console.log('========== ZOUZOUA ESPN ==========');
+    console.log('Dates demandées :', days);
+
+    const results = await Promise.allSettled(
+      days.map(async day => {
+        const url = `${API}/scoreboard?dates=${day}`;
+        console.log('ESPN GET :', url);
+
+        const data = await getJSON(url);
+
+        console.log(
+          `ESPN ${day} :`,
+          Array.isArray(data.events) ? data.events.length : 0,
+          'match(s)'
+        );
+
+        return data;
+      })
+    );
+
     const map = new Map();
-    res.forEach(r => r.status === 'fulfilled' && (r.value.events || []).forEach(ev => map.set(ev.id, ev)));
-    const limit = now.getTime() + 24 * 3600000;
-    state.matches = [...map.values()].map(parseEvent)
-      .filter(m => (m.state === 'pre' && m.date.getTime() <= limit && m.date.getTime() >= now.getTime() - 5 * 60000) || m.state === 'in')
+
+    for (const result of results) {
+      if (result.status !== 'fulfilled') {
+        console.error('ESPN erreur :', result.reason);
+        continue;
+      }
+
+      const events = Array.isArray(result.value?.events)
+        ? result.value.events
+        : [];
+
+      for (const ev of events) {
+        if (ev?.id) {
+          map.set(ev.id, ev);
+        }
+      }
+    }
+
+    /*
+     * IMPORTANT :
+     * Ne pas filtrer uniquement sur "pre" / "in".
+     *
+     * ESPN peut fournir différents états selon la compétition
+     * et certains événements peuvent avoir un état différent
+     * tout en restant parfaitement valides.
+     *
+     * On conserve donc les événements ayant :
+     * - un id
+     * - une date valide
+     * - deux équipes
+     */
+    state.matches = [...map.values()]
+      .map(parseEvent)
+      .filter(m => {
+        const validDate =
+          m.date instanceof Date &&
+          !Number.isNaN(m.date.getTime());
+
+        const validTeams =
+          m.home?.name &&
+          m.away?.name;
+
+        return validDate && validTeams;
+      })
       .sort((a, b) => a.date - b.date);
-    const leagues = [...new Set(state.matches.map(m => m.league))].sort();
-    const sel = $('#leagueFilter'); const cur = sel.value;
-    sel.innerHTML = `<option value="">Tous les championnats (${leagues.length})</option>` + leagues.map(l => `<option ${l === cur ? 'selected' : ''}>${esc(l)}</option>`).join('');
-    $('#lastUpdate').textContent = 'Mis à jour à ' + fmtTime(new Date());
+
+    console.log('========== MATCHS APRÈS PARSING ==========');
+    console.log('Nombre total :', state.matches.length);
+
+    console.table(
+      state.matches.slice(0, 20).map(m => ({
+        id: m.id,
+        date: m.date.toISOString(),
+        home: m.home?.name,
+        away: m.away?.name,
+        state: m.state,
+        league: m.league
+      }))
+    );
+
+    const leagues = [
+      ...new Set(
+        state.matches
+          .map(m => m.league)
+          .filter(Boolean)
+      )
+    ].sort();
+
+    const sel = $('#leagueFilter');
+
+    if (sel) {
+      const cur = sel.value;
+
+      sel.innerHTML =
+        `<option value="">Tous les championnats (${leagues.length})</option>` +
+        leagues
+          .map(l =>
+            `<option value="${esc(l)}" ${l === cur ? 'selected' : ''}>${esc(l)}</option>`
+          )
+          .join('');
+
+      if (cur && !leagues.includes(cur)) {
+        sel.value = '';
+        state.league = '';
+      }
+    }
+
+    const lastUpdate = $('#lastUpdate');
+
+    if (lastUpdate) {
+      lastUpdate.textContent =
+        'Mis à jour à ' + fmtTime(new Date());
+    }
+
     renderList();
-    if (!state.selected && !isMobile()) renderEmpty();
+
+    if (!state.selected && !isMobile()) {
+      renderEmpty();
+    }
+
   } catch (e) {
-    list.innerHTML = `<div class="p-8 text-center text-sm text-gray-400"><i data-lucide="wifi-off" class="w-6 h-6 mx-auto mb-2"></i>Impossible de récupérer les matchs.<br><button onclick="location.reload()" class="mt-3 text-accent">Réessayer</button></div>`;
+    console.error('========== ERREUR CHARGEMENT MATCHS ==========');
+    console.error(e);
+
+    list.innerHTML = `
+      <div class="p-8 text-center text-sm text-gray-400">
+        <i data-lucide="wifi-off" class="w-6 h-6 mx-auto mb-2"></i>
+        Impossible de récupérer les matchs.
+        <br>
+        <button
+          onclick="location.reload()"
+          class="mt-3 text-accent"
+        >
+          Réessayer
+        </button>
+      </div>
+    `;
+
     icons_();
-  } finally { $('#refreshBtn svg')?.classList.remove('spin'); }
+
+  } finally {
+    $('#refreshBtn svg')?.classList.remove('spin');
+  }
 }
 
 /* ---------- List ---------- */
@@ -130,11 +283,11 @@ function renderList() {
     if (matchCount % 5 === 0 && matchCount < items.length) {
       html += `<div class="p-3 border-b border-line" aria-label="Publicité">
         <ins class="adsbygoogle"
-             style="display:block; min-height:100px"
+             style="display:block"
              data-ad-format="fluid"
-             data-ad-layout-key="-fb+5w+4e-db+86"
+             data-ad-layout-key="-al+bk-2f-53+ik"
              data-ad-client="ca-pub-8143082489700562"
-             data-ad-slot="8237678040"></ins>
+             data-ad-slot="1599955804"></ins>
       </div>`;
     }
   });
@@ -195,7 +348,7 @@ async function selectMatch(id) {
 
   renderDetail(m, null);
   if (!state.summaries[id]) {
-    try { state.summaries[id] = await getJSON(`${API}/summary?event=${id}`); } catch { state.summaries[id] = {}; }
+    try { state.summaries[id] = await getJSON(`${LOCAL_API}/matches/${id}/summary`); } catch { state.summaries[id] = {}; }
   }
   if (state.selected === id) renderDetail(m, state.summaries[id]);
   if (!state.analyses[id] && puter.auth.isSignedIn()) {
@@ -478,9 +631,11 @@ function renderAnalysis(m) {
         <div class="mt-4 rounded-lg border border-line bg-panel p-3 text-gray-300">
           <p class="mb-3 text-sm font-semibold">Publicité</p>
           <ins class="adsbygoogle"
-               style="display:inline-block;width:320px;height:100px"
+               style="display:block"
                data-ad-client="ca-pub-8143082489700562"
-               data-ad-slot="1733558459"></ins>
+               data-ad-slot="4159415390"
+               data-ad-format="auto"
+               data-full-width-responsive="true"></ins>
         </div>` : ''}
     </section>`;
 
