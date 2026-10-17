@@ -381,47 +381,80 @@ function buildContext(m) {
 
 async function analyze(m) {
   state.analyses[m.id] = 'loading';
-  renderAnalyzeBtn(m); renderAnalysis(m);
+  renderAnalyzeBtn(m);
+  renderAnalysis(m);
+
+  const startedAt = Date.now();
   const ctx = buildContext(m);
+
   try {
-    const r = await fetch(ANALYZE_URL.replace(/\/$/, '') + '/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: ctx }) });
-    const raw = await r.json();
-
-    console.log("===== REPONSE SERVEUR BRUTE =====");
-    console.log(raw);
-
-    let json = raw;
-
-    try {
-      if (raw.choices && raw.choices[0]?.message?.content) {
-        json = JSON.parse(raw.choices[0].message.content);
+    const response = await fetch(
+      ANALYZE_URL.replace(/\/$/, '') + '/analyze',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ matchId: String(m.id), context: ctx })
       }
-    } catch(e) {
-      console.error("Erreur parsing IA :", e);
+    );
+
+    let raw = await response.json();
+
+    // Afficher le chargement pendant au moins cinq secondes.
+    const elapsed = Date.now() - startedAt;
+    if (elapsed < 5000) {
+      await new Promise(resolve => setTimeout(resolve, 5000 - elapsed));
     }
 
-    console.log("===== JSON FINAL SITE =====");
-    console.log(json);
-    console.log("TYPE PRONOSTICS :", typeof json.pronostics);
-    console.log("NOMBRE PRONOS :", json.pronostics?.length);
-    console.log("CONTENU PRONOS :", json.pronostics);
+    if (response.status === 202 && raw.pending) {
+      let readyResult = null;
 
-    console.group("🤖 REPONSE IA ZOUZOUA");
-    console.log("Objet complet :", json);
-    console.log("JSON formaté :", JSON.stringify(json, null, 2));
-    console.groupEnd();
+      // Consultation du cache sans répéter la demande payante.
+      for (let attempt = 0; attempt < 36; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 5000));
 
-    console.log("===== REPONSE IA COMPLETE =====");
-    console.log(JSON.stringify(json, null, 2));
-    console.log("===== FIN REPONSE IA =====");
+        const check = await fetch(
+          ANALYZE_URL.replace(/\/$/, '') +
+            '/api/analysis/' + encodeURIComponent(String(m.id))
+        );
+        const status = await check.json();
 
-    if (!r.ok || json.error) throw new Error(json.error || 'Erreur du service d\'analyse');
-    json.generatedAt = Date.now();
-    state.analyses[m.id] = json;
-  } catch (e) {
-    state.analyses[m.id] = { error: e?.message || 'Erreur lors de l\'analyse' };
+        if (!check.ok) {
+          throw new Error(status.error || 'Impossible de consulter le cache.');
+        }
+
+        if (status.ready && status.result) {
+          readyResult = status.result;
+          readyResult.generatedAt = status.generatedAt
+            ? new Date(status.generatedAt).getTime()
+            : Date.now();
+          break;
+        }
+      }
+
+      if (!readyResult) {
+        throw new Error(
+          "L'analyse n'est pas encore prête. Réessaie dans quelques minutes."
+        );
+      }
+
+      raw = readyResult;
+    } else if (!response.ok || raw.error) {
+      throw new Error(raw.error || "Erreur du service d'analyse.");
+    } else {
+      raw.generatedAt = Date.now();
+    }
+
+    state.analyses[m.id] = raw;
+  } catch (error) {
+    state.analyses[m.id] = {
+      error: error?.message || "Erreur lors de la récupération de l'analyse."
+    };
   }
-  if (state.selected === m.id) { renderAnalyzeBtn(m); renderAnalysis(m); }
+
+  if (state.selected === m.id) {
+    renderAnalyzeBtn(m);
+    renderAnalysis(m);
+  }
 }
 
 async function _unusedLegacy(m, ctx) {

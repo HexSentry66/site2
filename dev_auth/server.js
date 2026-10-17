@@ -91,117 +91,521 @@ app.get("/icons/:filename", (req, res) => {
   return res.sendFile(path.join(__dirname, "icons", req.params.filename));
 });
 
+
 const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
 const NVIDIA_MODEL = "openai/gpt-oss-20b";
 const keyManager = require("./key-manager");
+const { query: analysisQuery } = require("./db/postgres");
 
-app.post("/analyze", requireAuth, enforceDailyQuota, async (req, res) => {
-  const auditId = await recordAnalysisStart(req.user.id, req.body?.context);
+async function ensureMatchAnalysesTable() {
+  await analysisQuery(`
+    CREATE TABLE IF NOT EXISTS match_analyses (
+      event_id TEXT PRIMARY KEY,
+      match_text TEXT NOT NULL DEFAULT '',
+      competition TEXT NOT NULL DEFAULT '',
+      match_date TEXT NOT NULL DEFAULT '',
+      context JSONB NOT NULL DEFAULT '{}'::jsonb,
+      result JSONB,
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'processing', 'ready', 'error')),
+      generated_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  console.log("Stockage des analyses de matchs prêt.");
+}
+
+async function generateFootballAnalysis(context) {
+  const response = await fetch(NVIDIA_BASE_URL + "/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer " + keyManager.getNextKey(),
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: NVIDIA_MODEL,
+      messages: [
+        {
+          role: "system",
+          content: `Tu es un analyste football professionnel spécialisé dans les pronostics sportifs.
+Analyse uniquement les données fournies. Ne jamais inventer de statistiques absentes.
+Choisis les marchés les plus pertinents selon les informations disponibles.
+Réponds uniquement avec un JSON valide, sans markdown, au format :
+{
+  "resume":"Résumé professionnel du rapport de force entre les équipes.",
+  "pronostics":[
+    {
+      "marche":"Nom du marché",
+      "choix":"Pronostic sélectionné",
+      "probabilite":"Pourcentage estimé",
+      "confiance":"Faible|Moyenne|Élevée",
+      "explication":"Explication fondée uniquement sur les données disponibles."
+    }
+  ],
+  "bilan_final":"Synthèse des opportunités et des risques. Aucun pronostic n'est garanti."
+}
+Règles : exactement 3 pronostics, classés du plus intéressant au moins intéressant. Ne jamais inventer de données ni garantir un résultat.`
+        },
+        { role: "user", content: JSON.stringify(context) }
+      ],
+      temperature: 0.6,
+      max_tokens: 4096
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error("NVIDIA HTTP " + response.status);
+  }
+
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content || "";
+  const first = content.indexOf("{");
+  const last = content.lastIndexOf("}");
+
+  if (first < 0 || last <= first) {
+    throw new Error("Réponse IA non exploitable.");
+  }
+
+  const result = JSON.parse(content.slice(first, last + 1));
+
+  if (!Array.isArray(result.pronostics) || result.pronostics.length !== 3) {
+    throw new Error("L'IA n'a pas renvoyé exactement trois pronostics.");
+  }
+
+  return result;
+}
+
+function espnEventContext(event, summary = {}) {
+  const competition = event.competitions?.[0] || {};
+  const competitors = competition.competitors || [];
+  const home = competitors.find(t => t.homeAway === "home") || competitors[0];
+  const away = competitors.find(t => t.homeAway === "away") || competitors[1];
+  const homeName = home?.team?.displayName || "Équipe domicile";
+  const awayName = away?.team?.displayName || "Équipe extérieure";
+
+  return {
+    match: `${homeName} (domicile) vs ${awayName} (extérieur)`,
+    championnat: competition.league?.name || competition.name ||
+      event.season?.slug || "Football",
+    date: event.date || "",
+    stade: competition.venue?.fullName || "Non communiqué",
+    domicile: {
+      nom: homeName,
+      forme: home?.form || "",
+      bilan: home?.records?.[0]?.summary || "",
+      score: home?.score || null
+    },
+    exterieur: {
+      nom: awayName,
+      forme: away?.form || "",
+      bilan: away?.records?.[0]?.summary || "",
+      score: away?.score || null
+    },
+    statistiques_et_donnees_avant_match: {
+      boxscore: summary.boxscore || null,
+      derniers_matchs: summary.lastFiveGames || [],
+      confrontations_directes: summary.headToHeadGames || [],
+      classement: summary.standings || [],
+      joueurs_cles: summary.leaders || [],
+      absences: summary.injuries || [],
+      cotes: summary.odds || summary.pickcenter || []
+    }
+  };
+}
+
+async function precomputeUpcomingMatches() {
   try {
-    const response = await fetch(NVIDIA_BASE_URL + "/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": "Bearer " + keyManager.getNextKey(),
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: NVIDIA_MODEL,
-        messages: [
-          {
-            role: "system",
-            content: `Tu es un analyste football professionnel spécialisé dans les pronostics sportifs.
+    await ensureMatchAnalysesTable();
 
-Analyse uniquement les données fournies.
-Ne jamais inventer de statistiques absentes.
-
-Ton objectif est de sélectionner les pronostics les plus pertinents pour ce match.
-
-Tu dois choisir toi-même les marchés adaptés selon les informations disponibles.
-
-Ne force jamais un marché qui n'est pas suffisamment justifié.
-
-Réponds uniquement avec un JSON valide.
-
-Format obligatoire :
-
-{
-"resume":"Résumé professionnel du rapport de force entre les deux équipes.",
-
-"pronostics":[
-{
-"marche":"Nom du marché",
-"choix":"Pronostic sélectionné",
-"probabilite":"Pourcentage estimé",
-"confiance":"Faible|Moyenne|Élevée",
-"explication":"Explication basée uniquement sur les données disponibles."
-}
-],
-
-"bilan_final":"Synthèse finale des meilleures opportunités et des risques. Aucun pronostic n'est garanti."
-}
-
-Règles obligatoires :
-- Donner exactement 3 pronostics.
-- Classer les pronostics du plus intéressant au moins intéressant.
-- Utiliser uniquement les marchés réellement justifiés.
-- Ne jamais inventer de données.
-- Ne jamais donner de certitude absolue.
-- Répondre uniquement en JSON sans markdown.`
-
-          },
-          {
-            role: "user",
-            content: JSON.stringify(req.body.context)
-          }
-        ],
-        temperature: 0.6,
-        max_tokens: 4096
-      })
+    const now = new Date();
+    const dates = [-1, 0, 1].map(offset => {
+      const d = new Date(now);
+      d.setUTCDate(d.getUTCDate() + offset);
+      return [
+        d.getUTCFullYear(),
+        String(d.getUTCMonth() + 1).padStart(2, "0"),
+        String(d.getUTCDate()).padStart(2, "0")
+      ].join("");
     });
 
-    if (!response.ok) {
-      await finishAnalysisEvent(auditId, "error");
-      console.error("Erreur NVIDIA HTTP :", response.status);
-      return res.status(502).json({
-        error: "Le service d’analyse est momentanément indisponible."
-      });
+    const boards = await Promise.all(
+      dates.map(date =>
+        fetchESPN(`${ESPN_SOCCER_API}/scoreboard?dates=${date}`)
+      )
+    );
+
+    const unique = new Map();
+    for (const board of boards) {
+      for (const event of board.events || []) {
+        if (event?.id) unique.set(String(event.id), event);
+      }
     }
 
-    let data;
-    try {
-      data = await response.json();
-    } catch {
-      await finishAnalysisEvent(auditId, "error");
-      return res.status(502).json({
-        error: "Réponse invalide du service d’analyse."
-      });
+    const upcoming = [...unique.values()]
+      .filter(event => {
+        const date = new Date(event.date).getTime();
+        const state = event.competitions?.[0]?.status?.type?.state;
+        return state === "pre" &&
+          date > Date.now() &&
+          date <= Date.now() + 24 * 60 * 60 * 1000;
+      })
+      .sort((a, b) => new Date(a.date) - new Date(b.date))
+      .slice(0, 20);
+
+    console.log(`Pré-calcul : ${upcoming.length} matchs à vérifier.`);
+
+    // Traitement séquentiel pour limiter la charge sur l'API IA.
+    for (const event of upcoming) {
+      const id = String(event.id);
+      const competition = event.competitions?.[0] || {};
+      const competitors = competition.competitors || [];
+      const home = competitors.find(t => t.homeAway === "home") || competitors[0];
+      const away = competitors.find(t => t.homeAway === "away") || competitors[1];
+      const matchText =
+        `${home?.team?.displayName || "Domicile"} vs ${away?.team?.displayName || "Extérieur"}`;
+
+      const claim = await analysisQuery(`
+        INSERT INTO match_analyses
+          (event_id, match_text, competition, match_date, status, updated_at)
+        VALUES ($1, $2, $3, $4, 'processing', NOW())
+        ON CONFLICT (event_id) DO UPDATE SET
+          match_text = EXCLUDED.match_text,
+          competition = EXCLUDED.competition,
+          match_date = EXCLUDED.match_date,
+          status = 'processing',
+          updated_at = NOW()
+        WHERE
+          (match_analyses.status <> 'processing'
+           OR match_analyses.updated_at < NOW() - INTERVAL '20 minutes')
+          AND
+          (match_analyses.status <> 'ready'
+           OR match_analyses.generated_at IS NULL
+           OR match_analyses.generated_at < NOW() - INTERVAL '6 hours')
+        RETURNING event_id
+      `, [
+        id,
+        matchText,
+        competition.name || competition.league?.name || "Football",
+        event.date || ""
+      ]);
+
+      if (!claim.rowCount) continue;
+
+      try {
+        const summary = await fetchESPN(
+          `${ESPN_SOCCER_API}/summary?event=${encodeURIComponent(id)}`
+        );
+        const context = espnEventContext(event, summary);
+        const result = await generateFootballAnalysis(context);
+
+        await analysisQuery(`
+          UPDATE match_analyses
+          SET context = $2::jsonb,
+              result = $3::jsonb,
+              status = 'ready',
+              generated_at = NOW(),
+              updated_at = NOW()
+          WHERE event_id = $1
+        `, [id, JSON.stringify(context), JSON.stringify(result)]);
+
+        console.log("Analyse pré-calculée :", id, matchText);
+      } catch (error) {
+        await analysisQuery(`
+          UPDATE match_analyses
+          SET status = 'error', updated_at = NOW()
+          WHERE event_id = $1
+        `, [id]).catch(() => {});
+        console.error("Pré-calcul impossible pour", id, error.message);
+      }
+    }
+  } catch (error) {
+    console.error("Erreur du pré-calcul des matchs :", error.message);
+  }
+}
+
+// Une demande utilisateur consulte le cache : elle ne génère jamais une analyse.
+app.post("/analyze", requireAuth, enforceDailyQuota, async (req, res) => {
+  const context = req.body?.context || {};
+  const auditId = await recordAnalysisStart(req.user.id, context);
+  const matchId = String(req.body?.matchId || "").replace(/\D/g, "");
+
+  if (!matchId) {
+    await finishAnalysisEvent(auditId, "error");
+    return res.status(400).json({ error: "Identifiant du match manquant." });
+  }
+
+  try {
+    const cached = await analysisQuery(`
+      SELECT result, status
+      FROM match_analyses
+      WHERE event_id = $1
+    `, [matchId]);
+
+    if (cached.rows[0]?.status === "ready" && cached.rows[0]?.result) {
+      await finishAnalysisEvent(auditId, "success");
+      return res.json(cached.rows[0].result);
     }
 
-    const content = data.choices?.[0]?.message?.content || "";
-
-    let result;
-    try {
-      const start = content.indexOf("{");
-      const end = content.lastIndexOf("}");
-
-      result = JSON.parse(content.slice(start, end + 1));
-
-    } catch (e) {
-      console.error("Réponse IA non exploitable :", e.message);
-      await finishAnalysisEvent(auditId, "error");
-      return res.status(502).json({ error: "Réponse IA non exploitable." });
-    }
-
-    await finishAnalysisEvent(auditId, "success");
-    res.json(result);
-
+    await finishAnalysisEvent(auditId, "error");
+    return res.status(202).json({
+      pending: true,
+      matchId,
+      message: "Cette analyse est encore en préparation."
+    });
   } catch (error) {
     await finishAnalysisEvent(auditId, "error");
-    console.error("Erreur service analyse :", error.message);
-    res.status(500).json({ error: "Le service d’analyse est momentanément indisponible." });
+    console.error("Lecture du cache d'analyse impossible :", error.message);
+    return res.status(503).json({
+      error: "Le stockage des analyses est temporairement indisponible."
+    });
+  }
+});
+
+// Consultation du cache sans consommer un nouveau quota.
+app.get("/api/analysis/:id", requireAuth, async (req, res) => {
+  const id = String(req.params.id || "").replace(/\D/g, "");
+  if (!id) return res.status(400).json({ error: "Identifiant invalide." });
+
+  try {
+    const cached = await analysisQuery(`
+      SELECT result, status, generated_at
+      FROM match_analyses
+      WHERE event_id = $1
+    `, [id]);
+
+    const row = cached.rows[0];
+    if (row?.status === "ready" && row.result) {
+      return res.json({
+        ready: true,
+        result: row.result,
+        generatedAt: row.generated_at
+      });
+    }
+
+    return res.json({ ready: false, pending: true });
+  } catch (error) {
+    console.error("Lecture du cache impossible :", error.message);
+    return res.status(503).json({ error: "Cache temporairement indisponible." });
+  }
+});
+
+
+
+// ============================================================
+// API ZOUZOUA — DONNÉES FOOTBALL
+// ============================================================
+
+const ESPN_SOCCER_API =
+  "https://site.api.espn.com/apis/site/v2/sports/soccer/all";
+
+const espnCache = new Map();
+const ESPN_CACHE_TTL = 60 * 1000;
+
+async function fetchESPN(url) {
+  const cached = espnCache.get(url);
+  const now = Date.now();
+
+  if (cached && now - cached.time < ESPN_CACHE_TTL) {
+    return cached.data;
+  }
+
+  const response = await fetch(url, {
+    headers: {
+      "Accept": "application/json",
+      "User-Agent": "Zouzoua-Pronostic/1.0"
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`ESPN HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
+
+  espnCache.set(url, {
+    time: now,
+    data
+  });
+
+  return data;
+}
+
+// État du serveur
+app.get("/api/health", (req, res) => {
+  res.json({
+    ok: true,
+    service: "Zouzoua Pronostic",
+    api: "football",
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Liste des matchs.
+// Sans paramètre : hier + aujourd'hui + demain.
+// Avec ?date=YYYYMMDD : une seule date.
+app.get("/api/matches", async (req, res) => {
+  try {
+    const requestedDate = String(req.query.date || "").trim();
+
+    let dates;
+
+    if (requestedDate) {
+      const date = requestedDate.replace(/\D/g, "");
+
+      if (!/^\d{8}$/.test(date)) {
+        return res.status(400).json({
+          ok: false,
+          error: "Date invalide. Format attendu : YYYYMMDD."
+        });
+      }
+
+      dates = [date];
+
+    } else {
+      const now = new Date();
+
+      dates = [-1, 0, 1].map(offset => {
+        const d = new Date(now);
+        d.setDate(d.getDate() + offset);
+
+        return [
+          d.getFullYear(),
+          String(d.getMonth() + 1).padStart(2, "0"),
+          String(d.getDate()).padStart(2, "0")
+        ].join("");
+      });
+    }
+
+    const results = await Promise.all(
+      dates.map(date =>
+        fetchESPN(
+          `${ESPN_SOCCER_API}/scoreboard?dates=${date}`
+        )
+      )
+    );
+
+    const events = new Map();
+
+    for (const data of results) {
+      for (const event of data.events || []) {
+        if (event?.id) {
+          events.set(String(event.id), event);
+        }
+      }
+    }
+
+    const list = [...events.values()].sort(
+      (a, b) => new Date(a.date) - new Date(b.date)
+    );
+
+    res.json({
+      ok: true,
+      dates,
+      count: list.length,
+      events: list
+    });
+
+  } catch (error) {
+    console.error("Erreur /api/matches :", error.message);
+
+    res.status(502).json({
+      ok: false,
+      error: "Impossible de récupérer les matchs."
+    });
+  }
+});
+
+// Un match précis.
+// Exemple : /api/matches/401882844
+app.get("/api/matches/:id", async (req, res) => {
+  try {
+    const id = String(req.params.id).replace(/\D/g, "");
+
+    if (!id) {
+      return res.status(400).json({
+        error: "ID de match invalide."
+      });
+    }
+
+    const data = await fetchESPN(
+      `${ESPN_SOCCER_API}/summary?event=${id}`
+    );
+
+    const event =
+      data.header?.competitions?.[0] ||
+      data.header ||
+      null;
+
+    res.json({
+      ok: true,
+      id,
+      event,
+      summary: data
+    });
+
+  } catch (error) {
+    console.error("Erreur /api/matches/:id :", error.message);
+
+    res.status(502).json({
+      ok: false,
+      error: "Impossible de récupérer le match."
+    });
+  }
+});
+
+// Résumé détaillé d'un match.
+// Exemple : /api/matches/401882844/summary
+app.get("/api/matches/:id/summary", async (req, res) => {
+  try {
+    const id = String(req.params.id).replace(/\D/g, "");
+
+    if (!id) {
+      return res.status(400).json({
+        error: "ID de match invalide."
+      });
+    }
+
+    const data = await fetchESPN(
+      `${ESPN_SOCCER_API}/summary?event=${id}`
+    );
+
+    res.json({
+      ok: true,
+      id,
+      boxscore: data.boxscore || null,
+      lastFiveGames: data.lastFiveGames || [],
+      leaders: data.leaders || [],
+      standings: data.standings || [],
+      pickcenter: data.pickcenter || null,
+      odds: data.odds || [],
+      header: data.header || null
+    });
+
+  } catch (error) {
+    console.error(
+      "Erreur /api/matches/:id/summary :",
+      error.message
+    );
+
+    res.status(502).json({
+      ok: false,
+      error: "Impossible de récupérer le résumé du match."
+    });
   }
 });
 
 app.listen(process.env.PORT || 3000, "0.0.0.0", () => {
   console.log("Zouzoua local lancé sur http://localhost:3000");
+
+  // Initialisation du stockage puis préparation des matchs.
+  ensureMatchAnalysesTable()
+    .then(() => precomputeUpcomingMatches())
+    .catch(error => console.error("Initialisation des analyses impossible :", error.message));
+
+  // Actualisation périodique lorsque le service est actif.
+  setInterval(() => {
+    precomputeUpcomingMatches().catch(error =>
+      console.error("Pré-calcul périodique impossible :", error.message)
+    );
+  }, 15 * 60 * 1000);
 });
