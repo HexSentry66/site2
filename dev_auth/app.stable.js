@@ -386,6 +386,43 @@ async function analyze(m) {
 
   const startedAt = Date.now();
   const ctx = buildContext(m);
+  let auditId = null;
+  let auditFinished = false;
+
+  const finishAudit = async status => {
+    if (!auditId || auditFinished) return;
+
+    const finishUrl = ANALYZE_URL.replace(/\/$/, '') +
+      '/api/analysis/audit/' + encodeURIComponent(String(auditId)) + '/finish';
+
+    // Deux tentatives au maximum en cas d'échec réseau ou HTTP.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const finishResponse = await fetch(finishUrl, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status })
+        });
+
+        if (finishResponse.ok) {
+          auditFinished = true;
+          return;
+        }
+      } catch (_) {
+        // Ne pas masquer le résultat de l'analyse.
+      }
+
+      if (attempt === 0) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
+
+    console.warn('Clôture du journal d’analyse non confirmée.', {
+      auditId,
+      status
+    });
+  };
 
   try {
     const response = await fetch(
@@ -398,6 +435,7 @@ async function analyze(m) {
     );
 
     let raw = await response.json();
+    auditId = raw.auditId || null;
 
     // Afficher le chargement pendant au moins cinq secondes.
     const elapsed = Date.now() - startedAt;
@@ -438,6 +476,7 @@ async function analyze(m) {
       }
 
       raw = readyResult;
+      await finishAudit('success');
     } else if (!response.ok || raw.error) {
       throw new Error(raw.error || "Erreur du service d'analyse.");
     } else {
@@ -446,6 +485,7 @@ async function analyze(m) {
 
     state.analyses[m.id] = raw;
   } catch (error) {
+    await finishAudit('error');
     state.analyses[m.id] = {
       error: error?.message || "Erreur lors de la récupération de l'analyse."
     };

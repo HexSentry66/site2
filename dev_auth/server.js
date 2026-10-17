@@ -31,7 +31,7 @@ app.use((req, res, next) => {
   }
   next();
 });
-const { attachAuth, enforceDailyQuota, recordAnalysisStart, finishAnalysisEvent } = require("./auth");
+const { attachAuth, enforceDailyQuota, recordAnalysisStart, finishAnalysisEvent, finishAnalysisEventForUser } = require("./auth");
 const requireAuth = attachAuth(app);
 
 // Le panel est servi uniquement après vérification de la session et du rôle.
@@ -213,7 +213,17 @@ function espnEventContext(event, summary = {}) {
   };
 }
 
+let precomputeRunning = false;
+
 async function precomputeUpcomingMatches() {
+  // Empêche tout chevauchement si une génération dépasse une minute.
+  if (precomputeRunning) {
+    console.log("Pré-calcul déjà en cours : passage ignoré.");
+    return;
+  }
+
+  precomputeRunning = true;
+
   try {
     await ensureMatchAnalysesTable();
 
@@ -249,12 +259,12 @@ async function precomputeUpcomingMatches() {
           date > Date.now() &&
           date <= Date.now() + 24 * 60 * 60 * 1000;
       })
-      .sort((a, b) => new Date(a.date) - new Date(b.date))
-      .slice(0, 20);
+      .sort((a, b) => new Date(a.date) - new Date(b.date));
 
     console.log(`Pré-calcul : ${upcoming.length} matchs à vérifier.`);
 
-    // Traitement séquentiel pour limiter la charge sur l'API IA.
+    // Cherche le prochain match non encore analysé.
+    // Un résultat "ready" est conservé définitivement et jamais régénéré.
     for (const event of upcoming) {
       const id = String(event.id);
       const competition = event.competitions?.[0] || {};
@@ -274,13 +284,18 @@ async function precomputeUpcomingMatches() {
           match_date = EXCLUDED.match_date,
           status = 'processing',
           updated_at = NOW()
-        WHERE
-          (match_analyses.status <> 'processing'
-           OR match_analyses.updated_at < NOW() - INTERVAL '20 minutes')
-          AND
-          (match_analyses.status <> 'ready'
-           OR match_analyses.generated_at IS NULL
-           OR match_analyses.generated_at < NOW() - INTERVAL '6 hours')
+        WHERE match_analyses.status <> 'ready'
+          AND (
+            match_analyses.status = 'pending'
+            OR (
+              match_analyses.status = 'error'
+              AND match_analyses.updated_at < NOW() - INTERVAL '15 minutes'
+            )
+            OR (
+              match_analyses.status = 'processing'
+              AND match_analyses.updated_at < NOW() - INTERVAL '20 minutes'
+            )
+          )
         RETURNING event_id
       `, [
         id,
@@ -289,7 +304,11 @@ async function precomputeUpcomingMatches() {
         event.date || ""
       ]);
 
+      // Déjà prêt, en cours, ou en attente du délai de nouvelle tentative :
+      // passe au match suivant sans bloquer la file.
       if (!claim.rowCount) continue;
+
+      console.log("Début analyse pré-calculée :", id, matchText);
 
       try {
         const summary = await fetchESPN(
@@ -313,13 +332,21 @@ async function precomputeUpcomingMatches() {
         await analysisQuery(`
           UPDATE match_analyses
           SET status = 'error', updated_at = NOW()
-          WHERE event_id = $1
+          WHERE event_id = $1 AND status = 'processing'
         `, [id]).catch(() => {});
+
         console.error("Pré-calcul impossible pour", id, error.message);
       }
+
+      // Une seule tentative de génération maximum par exécution.
+      return;
     }
+
+    console.log("Pré-calcul : aucun match à traiter pour le moment.");
   } catch (error) {
     console.error("Erreur du pré-calcul des matchs :", error.message);
+  } finally {
+    precomputeRunning = false;
   }
 }
 
@@ -346,10 +373,12 @@ app.post("/analyze", requireAuth, enforceDailyQuota, async (req, res) => {
       return res.json(cached.rows[0].result);
     }
 
-    await finishAnalysisEvent(auditId, "error");
+    // Une analyse en préparation n'est pas un échec.
+    // L'événement d'audit reste en attente.
     return res.status(202).json({
       pending: true,
       matchId,
+      auditId,
       message: "Cette analyse est encore en préparation."
     });
   } catch (error) {
@@ -359,6 +388,33 @@ app.post("/analyze", requireAuth, enforceDailyQuota, async (req, res) => {
       error: "Le stockage des analyses est temporairement indisponible."
     });
   }
+});
+
+// Clôture sécurisée d'un événement d'audit appartenant à l'utilisateur connecté.
+app.post("/api/analysis/audit/:id/finish", requireAuth, async (req, res) => {
+  const idText = String(req.params.id || "");
+  const status = req.body?.status;
+
+  if (!/^\d+$/.test(idText) ||
+      !Number.isSafeInteger(Number(idText)) ||
+      Number(idText) < 1 ||
+      !["success", "error"].includes(status)) {
+    return res.status(400).json({ error: "Paramètres de clôture invalides." });
+  }
+
+  const finalized = await finishAnalysisEventForUser(
+    Number(idText),
+    req.user.id,
+    status
+  );
+
+  if (!finalized) {
+    return res.status(503).json({
+      error: "Impossible de mettre à jour le journal d'analyse."
+    });
+  }
+
+  return res.json({ ok: true });
 });
 
 // Consultation du cache sans consommer un nouveau quota.
@@ -607,5 +663,5 @@ app.listen(process.env.PORT || 3000, "0.0.0.0", () => {
     precomputeUpcomingMatches().catch(error =>
       console.error("Pré-calcul périodique impossible :", error.message)
     );
-  }, 15 * 60 * 1000);
+  }, 60 * 1000);
 });

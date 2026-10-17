@@ -52,6 +52,28 @@ async function finishAnalysisEvent(id, status) {
   }
 }
 
+async function finishAnalysisEventForUser(id, userId, status) {
+  if (!id || !userId || !['success', 'error'].includes(status)) return false;
+
+  try {
+    await query(`
+      UPDATE analysis_events
+      SET status = $1,
+          completed_at = to_char(
+            clock_timestamp() AT TIME ZONE 'UTC',
+            'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+          )
+      WHERE id = $2
+        AND user_id = $3
+        AND status = 'pending'
+    `, [status, id, userId]);
+    return true;
+  } catch (error) {
+    console.error('Clôture du journal utilisateur impossible :', error.message);
+    return false;
+  }
+}
+
 const COOKIE = 'zouzoua_session';
 const SESSION_MS = 8 * 60 * 60 * 1000;
 const cookieOptions = {
@@ -882,5 +904,6 @@ module.exports = {
   attachAuth,
   enforceDailyQuota,
   recordAnalysisStart,
-  finishAnalysisEvent
+  finishAnalysisEvent,
+  finishAnalysisEventForUser
 };
