@@ -157,50 +157,16 @@ function showDetailAd() {
   if (!ad || ad.dataset.dismissed === "true") return;
 
   ad.classList.remove("hidden");
-  ad.style.setProperty("display", "block", "important");
   ad.setAttribute("aria-hidden", "false");
 
-  let fallback = document.getElementById("detailAdFallback");
-  if (!fallback) {
-    fallback = document.createElement("div");
-    fallback.id = "detailAdFallback";
-    fallback.className =
-      "rounded-lg border border-dashed border-gray-600 bg-panel px-4 py-5 text-center text-sm text-gray-400";
-    fallback.textContent =
-      "Emplacement publicitaire — annonce non disponible pour le moment.";
-    const slot = ad.querySelector("ins.adsbygoogle");
-    if (slot) slot.insertAdjacentElement("afterend", fallback);
-    else ad.appendChild(fallback);
-  }
-
   const slot = ad.querySelector("ins.adsbygoogle");
-  const updateFallback = () => {
-    const status = slot?.getAttribute("data-ad-status");
-    const filled = status === "filled";
-    fallback.style.setProperty("display", filled ? "none" : "block", "important");
-  };
+  if (!slot || ad.dataset.initialized === "true") return;
 
-  updateFallback();
-
-  if (slot && !slot.dataset.fallbackWatch) {
-    slot.dataset.fallbackWatch = "true";
-    const observer = new MutationObserver(updateFallback);
-    observer.observe(slot, {
-      attributes: true,
-      attributeFilter: ["data-ad-status"]
-    });
-    setTimeout(updateFallback, 5000);
-  } else {
-    setTimeout(updateFallback, 5000);
-  }
-
-  if (!ad.dataset.initialized) {
-    try {
-      (window.adsbygoogle = window.adsbygoogle || []).push({});
-      ad.dataset.initialized = "true";
-    } catch (e) {
-      console.warn("AdSense détail indisponible :", e);
-    }
+  try {
+    (window.adsbygoogle = window.adsbygoogle || []).push({});
+    ad.dataset.initialized = "true";
+  } catch (e) {
+    console.warn("AdSense détail indisponible :", e);
   }
 }
 
@@ -209,11 +175,9 @@ function hideDetailAd() {
   if (!ad) return;
 
   ad.classList.add("hidden");
-  ad.style.setProperty("display", "none", "important");
   ad.setAttribute("aria-hidden", "true");
 }
 
-document.getElementById("closeDetailAd")?.addEventListener("click", hideDetailAd);
 
 /* ---------- Detail ---------- */
 function renderEmpty() {
@@ -363,7 +327,7 @@ function renderDetail(m, s) {
 
     <!-- Publicité indépendante entre le match et les résultats IA -->
     <section id="dedicatedAdArea"
-      class="w-full rounded-xl border border-line bg-panel p-3 sm:p-4"
+      class="w-full min-w-0"
       aria-label="Publicité">
       <p class="text-[11px] uppercase tracking-wider text-gray-500 mb-2">
         Publicité
