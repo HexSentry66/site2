@@ -327,6 +327,15 @@ function renderDetail(m, s) {
 
   const inj = [m.home, m.away].map(t => `<div><div class="text-xs text-gray-400 mb-1">${esc(t.short)}</div><p class="text-sm">${(d.injuries[t.id] || []).length ? d.injuries[t.id].map(esc).join(', ') : '<span class="text-gray-500">Aucune absence signalée</span>'}</p></div>`).join('');
 
+  // Préserver le nœud AdSense avant de reconstruire les détails du match.
+  // Il sera replacé dans #dedicatedAdArea juste après le rendu.
+  const persistentDetailAd = document.getElementById('detailAd');
+  const detailPane = document.getElementById('detailPane');
+  if (persistentDetailAd && detailPane &&
+      persistentDetailAd.closest('#detail')) {
+    detailPane.appendChild(persistentDetailAd);
+  }
+
   $('#detail').innerHTML = `
   <div class="max-w-5xl mx-auto p-4 sm:p-6 space-y-4">
     <button id="backBtn" class="md:hidden flex items-center gap-1 text-sm text-gray-400 mb-1"><i data-lucide="chevron-left" class="w-4 h-4"></i>Matchs</button>
@@ -352,6 +361,15 @@ function renderDetail(m, s) {
       </div>
     </section>
 
+    <!-- Publicité indépendante entre le match et les résultats IA -->
+    <section id="dedicatedAdArea"
+      class="w-full rounded-xl border border-line bg-panel p-3 sm:p-4"
+      aria-label="Publicité">
+      <p class="text-[11px] uppercase tracking-wider text-gray-500 mb-2">
+        Publicité
+      </p>
+    </section>
+
     <div id="analysis"></div>
 
     <div class="grid lg:grid-cols-2 gap-4">
@@ -369,79 +387,14 @@ function renderDetail(m, s) {
   $('#backBtn').onclick = () => { $('#detailPane').classList.add('hidden'); $('#listPane').classList.remove('hidden'); };
   renderAnalyzeBtn(m, loading);
 
-  // Emplacement publicitaire visible, directement sous le bouton.
-  const analyzeArea = document.getElementById('analyzeArea');
-  if (analyzeArea) {
-    analyzeArea.style.setProperty('display', 'flex', 'important');
-    analyzeArea.style.setProperty('flex-direction', 'column', 'important');
-    analyzeArea.style.setProperty('align-items', 'stretch', 'important');
-    analyzeArea.style.setProperty('width', '100%', 'important');
-    analyzeArea.style.setProperty('min-width', '0', 'important');
-    analyzeArea.style.setProperty('gap', '8px', 'important');
+  // La publicité reste hors du bloc du bouton d'analyse.
+  const dedicatedAdArea = document.getElementById('dedicatedAdArea');
+  const detailAd = document.getElementById('detailAd');
 
-    let detailAd = document.getElementById('detailAd');
-    if (!detailAd) {
-      detailAd = document.createElement('div');
-      detailAd.id = 'detailAd';
-      detailAd.innerHTML = `
-        <ins class="adsbygoogle"
-             style="display:block; min-height:90px; width:100%"
-             data-ad-client="ca-pub-8143082489700562"
-             data-ad-slot="1150108677"
-             data-ad-format="auto"
-             data-full-width-responsive="true"></ins>`;
-    }
-
-    detailAd.classList.remove('hidden');
-    detailAd.style.setProperty('display', 'block', 'important');
-    detailAd.style.setProperty('visibility', 'visible', 'important');
-    detailAd.style.setProperty('width', '100%', 'important');
-    detailAd.style.setProperty('min-height', '110px', 'important');
-    detailAd.style.setProperty('padding', '8px 0', 'important');
-    detailAd.setAttribute('aria-hidden', 'false');
-    analyzeArea.appendChild(detailAd);
-
-    let fallback = document.getElementById('detailAdFallback');
-    if (!fallback) {
-      fallback = document.createElement('div');
-      fallback.id = 'detailAdFallback';
-      fallback.style.cssText =
-        'display:block;min-height:64px;padding:18px 8px;text-align:center;' +
-        'border:1px dashed #64748b;border-radius:8px;color:#94a3b8;' +
-        'font-size:12px;box-sizing:border-box;width:100%;';
-      fallback.textContent =
-        'EMPLACEMENT PUBLICITAIRE DE TEST — aucune annonce reçue';
-      const slot = detailAd.querySelector('ins.adsbygoogle');
-      if (slot) slot.insertAdjacentElement('afterend', fallback);
-      else detailAd.appendChild(fallback);
-    }
-
-    const slot = detailAd.querySelector('ins.adsbygoogle');
-    const updateFallback = () => {
-      fallback.style.display =
-        slot?.getAttribute('data-ad-status') === 'filled' ? 'none' : 'block';
-    };
-    updateFallback();
-    if (slot && !slot.dataset.fallbackWatch) {
-      slot.dataset.fallbackWatch = 'true';
-      new MutationObserver(updateFallback).observe(slot, {
-        attributes: true,
-        attributeFilter: ['data-ad-status']
-      });
-    }
-
-    if (slot && !detailAd.dataset.initialized &&
-        !slot.hasAttribute('data-adsbygoogle-status')) {
-      try {
-        (window.adsbygoogle = window.adsbygoogle || []).push({});
-        detailAd.dataset.initialized = 'true';
-      } catch (e) {
-        console.warn('AdSense : annonce non chargée', e);
-      }
-    }
+  if (dedicatedAdArea && detailAd) {
+    dedicatedAdArea.appendChild(detailAd);
+    showDetailAd();
   }
-
-  renderAnalysis(m);
 
   renderAnalysis(m);
   icons_();
