@@ -369,23 +369,48 @@ function renderDetail(m, s) {
   $('#backBtn').onclick = () => { $('#detailPane').classList.add('hidden'); $('#listPane').classList.remove('hidden'); };
   renderAnalyzeBtn(m, loading);
 
-  // Publicité directement sous le bouton d'analyse.
-  const detailAd = document.getElementById('detailAd');
+  // Emplacement publicitaire visible, directement sous le bouton.
   const analyzeArea = document.getElementById('analyzeArea');
-  if (detailAd && analyzeArea) {
-    analyzeArea.appendChild(detailAd);
+  if (analyzeArea) {
+    analyzeArea.style.setProperty('display', 'flex', 'important');
+    analyzeArea.style.setProperty('flex-direction', 'column', 'important');
+    analyzeArea.style.setProperty('align-items', 'stretch', 'important');
+    analyzeArea.style.setProperty('width', '100%', 'important');
+    analyzeArea.style.setProperty('min-width', '0', 'important');
+    analyzeArea.style.setProperty('gap', '8px', 'important');
+
+    let detailAd = document.getElementById('detailAd');
+    if (!detailAd) {
+      detailAd = document.createElement('div');
+      detailAd.id = 'detailAd';
+      detailAd.innerHTML = `
+        <ins class="adsbygoogle"
+             style="display:block; min-height:90px; width:100%"
+             data-ad-client="ca-pub-8143082489700562"
+             data-ad-slot="1150108677"
+             data-ad-format="auto"
+             data-full-width-responsive="true"></ins>`;
+    }
+
     detailAd.classList.remove('hidden');
     detailAd.style.setProperty('display', 'block', 'important');
-    detailAd.style.padding = '8px 0 0';
+    detailAd.style.setProperty('visibility', 'visible', 'important');
+    detailAd.style.setProperty('width', '100%', 'important');
+    detailAd.style.setProperty('min-height', '110px', 'important');
+    detailAd.style.setProperty('padding', '8px 0', 'important');
     detailAd.setAttribute('aria-hidden', 'false');
+    analyzeArea.appendChild(detailAd);
 
-    // En test, conserver un emplacement visible si AdSense ne remplit pas l'annonce.
     let fallback = document.getElementById('detailAdFallback');
     if (!fallback) {
       fallback = document.createElement('div');
       fallback.id = 'detailAdFallback';
-      fallback.className = 'text-xs text-gray-500 text-center py-2';
-      fallback.textContent = 'Emplacement publicitaire — annonce non disponible pour le moment.';
+      fallback.style.cssText =
+        'display:block;min-height:64px;padding:18px 8px;text-align:center;' +
+        'border:1px dashed #64748b;border-radius:8px;color:#94a3b8;' +
+        'font-size:12px;box-sizing:border-box;width:100%;';
+      fallback.textContent =
+        'EMPLACEMENT PUBLICITAIRE DE TEST — aucune annonce reçue';
       const slot = detailAd.querySelector('ins.adsbygoogle');
       if (slot) slot.insertAdjacentElement('afterend', fallback);
       else detailAd.appendChild(fallback);
@@ -404,7 +429,19 @@ function renderDetail(m, s) {
         attributeFilter: ['data-ad-status']
       });
     }
+
+    if (slot && !detailAd.dataset.initialized &&
+        !slot.hasAttribute('data-adsbygoogle-status')) {
+      try {
+        (window.adsbygoogle = window.adsbygoogle || []).push({});
+        detailAd.dataset.initialized = 'true';
+      } catch (e) {
+        console.warn('AdSense : annonce non chargée', e);
+      }
+    }
   }
+
+  renderAnalysis(m);
 
   renderAnalysis(m);
   icons_();
