@@ -368,6 +368,44 @@ function renderDetail(m, s) {
   </div>`;
   $('#backBtn').onclick = () => { $('#detailPane').classList.add('hidden'); $('#listPane').classList.remove('hidden'); };
   renderAnalyzeBtn(m, loading);
+
+  // Publicité directement sous le bouton d'analyse.
+  const detailAd = document.getElementById('detailAd');
+  const analyzeArea = document.getElementById('analyzeArea');
+  if (detailAd && analyzeArea) {
+    analyzeArea.appendChild(detailAd);
+    detailAd.classList.remove('hidden');
+    detailAd.style.setProperty('display', 'block', 'important');
+    detailAd.style.padding = '8px 0 0';
+    detailAd.setAttribute('aria-hidden', 'false');
+
+    // En test, conserver un emplacement visible si AdSense ne remplit pas l'annonce.
+    let fallback = document.getElementById('detailAdFallback');
+    if (!fallback) {
+      fallback = document.createElement('div');
+      fallback.id = 'detailAdFallback';
+      fallback.className = 'text-xs text-gray-500 text-center py-2';
+      fallback.textContent = 'Emplacement publicitaire — annonce non disponible pour le moment.';
+      const slot = detailAd.querySelector('ins.adsbygoogle');
+      if (slot) slot.insertAdjacentElement('afterend', fallback);
+      else detailAd.appendChild(fallback);
+    }
+
+    const slot = detailAd.querySelector('ins.adsbygoogle');
+    const updateFallback = () => {
+      fallback.style.display =
+        slot?.getAttribute('data-ad-status') === 'filled' ? 'none' : 'block';
+    };
+    updateFallback();
+    if (slot && !slot.dataset.fallbackWatch) {
+      slot.dataset.fallbackWatch = 'true';
+      new MutationObserver(updateFallback).observe(slot, {
+        attributes: true,
+        attributeFilter: ['data-ad-status']
+      });
+    }
+  }
+
   renderAnalysis(m);
   icons_();
 }
@@ -558,13 +596,6 @@ Réponds UNIQUEMENT avec un JSON valide (sans markdown) au format :
 function renderAnalysis(m) {
   const box = $('#analysis');
   if (!box) return;
-
-  // Placer la publicité de détail juste après le bloc d'analyse IA.
-  // Le même élément est déplacé : aucune nouvelle annonce n'est créée.
-  const detailAd = document.getElementById('detailAd');
-  if (detailAd && box.isConnected) {
-    box.insertAdjacentElement('afterend', detailAd);
-  }
 
   const a = state.analyses[m.id];
 
