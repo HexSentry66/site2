@@ -523,6 +523,13 @@ function renderAnalysis(m) {
   const box = $('#analysis');
   if (!box) return;
 
+  // Placer la publicité de détail juste après le bloc d'analyse IA.
+  // Le même élément est déplacé : aucune nouvelle annonce n'est créée.
+  const detailAd = document.getElementById('detailAd');
+  if (detailAd && box.isConnected) {
+    box.insertAdjacentElement('afterend', detailAd);
+  }
+
   const a = state.analyses[m.id];
 
   if (!a) {
