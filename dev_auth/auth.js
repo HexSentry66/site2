@@ -202,96 +202,9 @@ async function releaseAnalysisQuota(userId, day, kind) {
 }
 
 async function enforceDailyQuota(req, res, next) {
-  const userId = req.user && req.user.id;
-  if (!Number.isSafeInteger(userId) || userId < 1) {
+  if (!req.user || !Number.isSafeInteger(req.user.id) || req.user.id < 1) {
     return res.status(401).json({ error: 'Connexion requise.' });
   }
-
-  // Les administrateurs ne consomment pas de quota.
-  if (req.user.role === 'admin') return next();
-
-  const day = new Date().toISOString().slice(0, 10);
-  let kind;
-
-  try {
-    const outcome = await transaction(async client => {
-      await client.query(`
-        INSERT INTO daily_usage (user_id, usage_date)
-        VALUES ($1, $2)
-        ON CONFLICT (user_id, usage_date) DO NOTHING
-      `, [userId, day]);
-
-      const usageResult = await client.query(`
-        SELECT free_used
-        FROM daily_usage
-        WHERE user_id = $1 AND usage_date = $2
-        FOR UPDATE
-      `, [userId, day]);
-
-      const usage = usageResult.rows[0];
-      if (!usage) throw new Error('Compteur quotidien introuvable.');
-
-      if (Number(usage.free_used) < 3) {
-        await client.query(`
-          UPDATE daily_usage
-          SET free_used = free_used + 1
-          WHERE user_id = $1 AND usage_date = $2
-        `, [userId, day]);
-        return { kind: 'free' };
-      }
-
-      const creditResult = await client.query(`
-        SELECT credits FROM reward_credits
-        WHERE user_id = $1
-        FOR UPDATE
-      `, [userId]);
-
-      const credit = creditResult.rows[0];
-      if (!credit || Number(credit.credits) < 1) {
-        return { limitReached: true };
-      }
-
-      const debit = await client.query(`
-        UPDATE reward_credits
-        SET credits = credits - 1
-        WHERE user_id = $1 AND credits > 0
-      `, [userId]);
-
-      if (debit.rowCount !== 1) return { limitReached: true };
-
-      await client.query(`
-        UPDATE daily_usage
-        SET rewarded_used = rewarded_used + 1
-        WHERE user_id = $1 AND usage_date = $2
-      `, [userId, day]);
-
-      return { kind: 'rewarded' };
-    });
-
-    if (outcome.limitReached) {
-      return res.status(429).json({
-        code: 'DAILY_LIMIT_REACHED',
-        error: 'Tes 3 analyses gratuites du jour sont utilisées. Une publicité récompensée validée sera nécessaire pour obtenir une analyse supplémentaire.'
-      });
-    }
-
-    kind = outcome.kind;
-  } catch (error) {
-    console.error('Erreur compteur quotidien :', error.message);
-    return res.status(500).json({
-      error: 'Vérification du quota impossible.'
-    });
-  }
-
-  // Une analyse échouée ne consomme pas l'utilisation réservée.
-  let released = false;
-  res.on('finish', () => {
-    if (!released && res.statusCode >= 400) {
-      released = true;
-      void releaseAnalysisQuota(userId, day, kind);
-    }
-  });
-
   return next();
 }
 
@@ -304,14 +217,6 @@ function requireAdmin(req, res, next) {
   return next();
 }
 
-function requireSuperAdmin(req, res, next) {
-  if (req.user?.id !== 5) {
-    return res.status(403).json({
-      error: 'Action réservée au super administrateur.'
-    });
-  }
-  return next();
-}
 
 function asyncRoute(handler) {
   return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
@@ -484,7 +389,7 @@ function attachAuth(app) {
     }
   }));
 
-  app.patch('/api/admin/users/:id/role', requireAuth, requireSuperAdmin,
+  app.patch('/api/admin/users/:id/role', requireAuth, requireAdmin,
     asyncRoute(async (req, res) => {
       const targetId = Number(req.params.id);
       const role = req.body?.role;
@@ -547,7 +452,7 @@ function attachAuth(app) {
     })
   );
 
-  app.patch('/api/admin/users/:id/status', requireAuth, requireSuperAdmin,
+  app.patch('/api/admin/users/:id/status', requireAuth, requireAdmin,
     asyncRoute(async (req, res) => {
       const targetId = Number(req.params.id);
       const value = req.body?.suspended;
@@ -584,7 +489,7 @@ function attachAuth(app) {
     })
   );
 
-  app.delete('/api/admin/users/:id', requireAuth, requireSuperAdmin,
+  app.delete('/api/admin/users/:id', requireAuth, requireAdmin,
     asyncRoute(async (req, res) => {
       const targetId = Number(req.params.id);
 
@@ -721,181 +626,6 @@ function attachAuth(app) {
     })
   );
 
-
-  // Simulation de récompense : ce mécanisme n'atteste pas le visionnage d'une publicité réelle.
-  const rewardSimulationLimiter = rateLimit({
-    windowMs: 60 * 1000,
-    limit: 10,
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: { error: 'Trop de tentatives. Réessaie dans une minute.' }
-  });
-
-  // Les récompenses sont des crédits de démonstration, indépendants d'AdSense.
-  app.post('/api/reward-simulation/start', requireAuth, rewardSimulationLimiter,
-    asyncRoute(async (req, res) => {
-      if (req.user.role === 'admin') {
-        return res.json({ ok: true, simulation: true, alreadyRewarded: true });
-      }
-
-      const userId = req.user.id;
-      const result = await transaction(async client => {
-        await client.query(`
-          CREATE TABLE IF NOT EXISTS reward_simulation_sessions (
-            id BIGSERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            claimed_at TIMESTAMPTZ
-          )
-        `);
-
-        // Une seule session non réclamée par compte à la fois.
-        const active = await client.query(`
-          SELECT id, claimed_at FROM reward_simulation_sessions
-          WHERE user_id = $1 AND claimed_at IS NULL
-          ORDER BY started_at DESC
-          LIMIT 1
-          FOR UPDATE
-        `, [userId]);
-
-        if (active.rows.length) {
-          return { sessionId: active.rows[0].id };
-        }
-
-        const created = await client.query(`
-          INSERT INTO reward_simulation_sessions (user_id)
-          VALUES ($1)
-          RETURNING id
-        `, [userId]);
-
-        return { sessionId: created.rows[0].id };
-      });
-
-      res.set('Cache-Control', 'no-store');
-      return res.json({
-        ok: true,
-        simulation: true,
-        sessionId: result.sessionId,
-        durationSeconds: 5,
-        message: 'Simulation de récompense uniquement.'
-      });
-    })
-  );
-
-  app.post('/api/reward-simulation/claim', requireAuth, rewardSimulationLimiter,
-    asyncRoute(async (req, res) => {
-      if (req.user.role === 'admin') {
-        return res.json({ ok: true, simulation: true, credits: 0 });
-      }
-
-      const sessionId = Number(req.body?.sessionId);
-      if (!Number.isSafeInteger(sessionId) || sessionId <= 0) {
-        return res.status(400).json({ error: 'Session de simulation invalide.' });
-      }
-
-      const userId = req.user.id;
-      const result = await transaction(async client => {
-        await client.query(`
-          CREATE TABLE IF NOT EXISTS reward_simulation_sessions (
-            id BIGSERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            claimed_at TIMESTAMPTZ
-          )
-        `);
-
-        const ticket = await client.query(`
-          SELECT id, started_at, claimed_at
-          FROM reward_simulation_sessions
-          WHERE id = $1 AND user_id = $2
-          FOR UPDATE
-        `, [sessionId, userId]);
-
-        if (!ticket.rows.length) return { status: 'not_found' };
-        if (ticket.rows[0].claimed_at) return { status: 'already_claimed' };
-
-        const elapsedMs = Date.now() - new Date(ticket.rows[0].started_at).getTime();
-        if (!Number.isFinite(elapsedMs) || elapsedMs < 5000) {
-          return { status: 'too_early' };
-        }
-
-        const updated = await client.query(`
-          UPDATE reward_simulation_sessions
-          SET claimed_at = NOW()
-          WHERE id = $1 AND user_id = $2 AND claimed_at IS NULL
-          RETURNING id
-        `, [sessionId, userId]);
-
-        if (!updated.rowCount) return { status: 'already_claimed' };
-
-        await client.query(`
-          INSERT INTO reward_credits (user_id, credits)
-          VALUES ($1, 1)
-          ON CONFLICT (user_id)
-          DO UPDATE SET credits = reward_credits.credits + 1
-        `, [userId]);
-
-        return { status: 'claimed' };
-      });
-
-      res.set('Cache-Control', 'no-store');
-
-      if (result.status === 'not_found') {
-        return res.status(404).json({ error: 'Session de simulation introuvable.' });
-      }
-      if (result.status === 'already_claimed') {
-        return res.status(409).json({ error: 'Cette simulation a déjà été réclamée.' });
-      }
-      if (result.status === 'too_early') {
-        return res.status(429).json({ error: 'Attends la fin des 5 secondes avant de réclamer le crédit.' });
-      }
-
-      return res.json({
-        ok: true,
-        simulation: true,
-        credits: 1,
-        message: 'Crédit de démonstration ajouté.'
-      });
-    })
-  );
-
-
-  // TEST UNIQUEMENT : ajoute un crédit de démonstration.
-  app.post('/api/reward-simulation/test-credit', requireAuth, rewardSimulationLimiter,
-    asyncRoute(async (req, res) => {
-      if (req.user.role !== 'admin') {
-        return res.status(403).json({ error: 'Route réservée aux administrateurs.' });
-      }
-
-      const userId = req.user.id;
-      const credits = await transaction(async client => {
-        await client.query(`
-          CREATE TABLE IF NOT EXISTS reward_credits (
-            user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-            credits INTEGER NOT NULL DEFAULT 0 CHECK (credits >= 0)
-          )
-        `);
-
-        const result = await client.query(`
-          INSERT INTO reward_credits (user_id, credits)
-          VALUES ($1, 1)
-          ON CONFLICT (user_id)
-          DO UPDATE SET credits = reward_credits.credits + 1
-          RETURNING credits
-        `, [userId]);
-
-        return result.rows[0].credits;
-      });
-
-      res.set('Cache-Control', 'no-store');
-      return res.json({
-        ok: true,
-        simulation: true,
-        credits,
-        message: 'Crédit de démonstration ajouté.'
-      });
-    })
-  );
 
   return requireAuth;
 }

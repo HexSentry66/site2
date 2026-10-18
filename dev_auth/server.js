@@ -31,7 +31,7 @@ app.use((req, res, next) => {
   }
   next();
 });
-const { attachAuth, enforceDailyQuota, recordAnalysisStart, finishAnalysisEvent, finishAnalysisEventForUser } = require("./auth");
+const { attachAuth, recordAnalysisStart, finishAnalysisEvent, finishAnalysisEventForUser } = require("./auth");
 const requireAuth = attachAuth(app);
 
 // Le panel est servi uniquement après vérification de la session et du rôle.
@@ -409,7 +409,7 @@ async function runOnDemandAnalysis(matchId, context, claimToken) {
   }
 }
 
-app.post("/analyze", requireAuth, enforceDailyQuota, async (req, res) => {
+app.post("/analyze", requireAuth, async (req, res) => {
   const context = req.body?.context || {};
   const auditId = await recordAnalysisStart(req.user.id, context);
   const matchId = String(req.body?.matchId || "");

@@ -542,9 +542,7 @@ function renderAnalysis(m) {
   }
 
   if (a.error) {
-    const quotaReached =
-      a.code === 'DAILY_LIMIT_REACHED' ||
-      /3 analyses gratuites du jour|limite des analyses gratuites|limite quotidienne/i.test(a.error || '');
+    const quotaReached = false; // Quota et récompenses désactivés.
 
     if (quotaReached) {
       const overlayId = 'zouzouaRewardAdOverlay';
