@@ -1,4 +1,5 @@
 const express = require("express");
+const { rateLimit } = require("express-rate-limit");
 const path = require("node:path");
 
 
@@ -32,6 +33,7 @@ app.use((req, res, next) => {
   next();
 });
 const { attachAuth, consumeAnalysisQuota, recordAnalysisStart, finishAnalysisEvent, finishAnalysisEventForUser } = require("./auth");
+const { transaction } = require("./db/postgres");
 const requireAuth = attachAuth(app);
 
 // Le panel est servi uniquement après vérification de la session et du rôle.
@@ -409,6 +411,150 @@ async function runOnDemandAnalysis(matchId, context, claimToken) {
   }
 }
 
+
+// REWARDED_GPT_LOCAL_INTEGRATION_V1
+async function ensureRewardedSessionsTable() {
+  await analysisQuery(`
+    CREATE TABLE IF NOT EXISTS rewarded_ad_sessions (
+      id UUID PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'claimed', 'expired')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMPTZ NOT NULL,
+      claimed_at TIMESTAMPTZ
+    )
+  `);
+  await analysisQuery(`
+    CREATE INDEX IF NOT EXISTS idx_rewarded_sessions_user_created
+    ON rewarded_ad_sessions(user_id, created_at DESC)
+  `);
+}
+
+const rewardedRequestLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Trop de demandes de récompense. Réessaie plus tard." }
+});
+
+// Crée une session courte liée au compte connecté.
+// Cette session protège contre les doubles réclamations, pas contre
+// la falsification d'un événement envoyé par le navigateur.
+app.post("/api/rewarded/start", requireAuth, rewardedRequestLimiter, async (req, res) => {
+  if (req.user.role === "admin") {
+    return res.status(400).json({
+      error: "Les administrateurs disposent déjà d'analyses illimitées."
+    });
+  }
+
+  try {
+    const sessionId = require("node:crypto").randomUUID();
+    const result = await analysisQuery(`
+      INSERT INTO rewarded_ad_sessions (id, user_id, expires_at)
+      VALUES ($1, $2, NOW() + INTERVAL '10 minutes')
+      RETURNING id, expires_at
+    `, [sessionId, req.user.id]);
+
+    res.set("Cache-Control", "no-store");
+    return res.status(201).json({
+      ok: true,
+      sessionId: result.rows[0].id,
+      expiresAt: result.rows[0].expires_at
+    });
+  } catch (error) {
+    console.error("Création session récompense impossible :", error.message);
+    return res.status(500).json({
+      error: "Impossible de démarrer la récompense."
+    });
+  }
+});
+
+// Réclame une session au maximum une fois. Le crédit et le changement
+// d'état sont enregistrés dans une seule transaction PostgreSQL.
+app.post("/api/rewarded/claim", requireAuth, rewardedRequestLimiter, async (req, res) => {
+  const sessionId = String(req.body?.sessionId || "");
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+  if (!uuidPattern.test(sessionId)) {
+    return res.status(400).json({ error: "Session de récompense invalide." });
+  }
+
+  if (req.user.role === "admin") {
+    return res.status(400).json({
+      error: "Les administrateurs disposent déjà d'analyses illimitées."
+    });
+  }
+
+  try {
+    const outcome = await transaction(async client => {
+      const found = await client.query(`
+        SELECT id, status, expires_at
+        FROM rewarded_ad_sessions
+        WHERE id = $1 AND user_id = $2
+        FOR UPDATE
+      `, [sessionId, req.user.id]);
+
+      const session = found.rows[0];
+      if (!session) return "invalid";
+      if (session.status !== "pending") return "already_used";
+
+      const expiry = await client.query(
+        "SELECT ($1::timestamptz > NOW()) AS valid",
+        [session.expires_at]
+      );
+
+      if (!expiry.rows[0]?.valid) {
+        await client.query(`
+          UPDATE rewarded_ad_sessions
+          SET status = 'expired'
+          WHERE id = $1 AND status = 'pending'
+        `, [sessionId]);
+        return "expired";
+      }
+
+      await client.query(`
+        UPDATE rewarded_ad_sessions
+        SET status = 'claimed', claimed_at = NOW()
+        WHERE id = $1 AND status = 'pending'
+      `, [sessionId]);
+
+      await client.query(`
+        INSERT INTO reward_credits (user_id, credits)
+        VALUES ($1, 1)
+        ON CONFLICT (user_id)
+        DO UPDATE SET credits = reward_credits.credits + 1
+      `, [req.user.id]);
+
+      return "claimed";
+    });
+
+    res.set("Cache-Control", "no-store");
+
+    if (outcome === "claimed") {
+      return res.json({
+        ok: true,
+        creditsAdded: 1,
+        message: "Un crédit a été ajouté à ton compte."
+      });
+    }
+    if (outcome === "already_used") {
+      return res.status(409).json({ error: "Cette récompense a déjà été réclamée." });
+    }
+    if (outcome === "expired") {
+      return res.status(410).json({ error: "La session de récompense a expiré." });
+    }
+    return res.status(404).json({ error: "Session de récompense introuvable." });
+  } catch (error) {
+    console.error("Réclamation récompense impossible :", error.message);
+    return res.status(500).json({
+      error: "Impossible d'enregistrer la récompense."
+    });
+  }
+});
+
+
 app.post("/analyze", requireAuth, async (req, res) => {
   const context = req.body?.context || {};
   const matchId = String(req.body?.matchId || "");
@@ -785,7 +931,8 @@ app.listen(process.env.PORT || 3000, "0.0.0.0", () => {
   console.log("Zouzoua local lancé sur http://localhost:3000");
 
   // Initialisation du stockage puis préparation des matchs.
-  ensureMatchAnalysesTable()
+  ensureRewardedSessionsTable()
+    .then(() => ensureMatchAnalysesTable())
     .then(() => precomputeUpcomingMatches())
     .catch(error => console.error("Initialisation des analyses impossible :", error.message));
 

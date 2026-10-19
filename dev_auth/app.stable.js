@@ -588,7 +588,14 @@ function renderAnalysis(m) {
           </div>
           <p class="mt-2 text-sm text-gray-300">${esc(a.error)}</p>
           <p class="mt-2 text-xs text-gray-400">
-            Le quota se réinitialise demain. Les crédits disponibles pourront être utilisés pour les analyses suivantes.
+            Le quota se réinitialise demain. Tu peux aussi demander un crédit avec une publicité récompensée.
+
+          <button type="button"
+            onclick="window.startRewardedGptAd(this)"
+            class="mt-3 w-full rounded-lg bg-amber-500 px-4 py-3 font-semibold text-gray-950 hover:bg-amber-400 disabled:opacity-60">
+            Regarder une publicité pour obtenir 1 crédit
+          </button>
+          <p class="mt-2 text-xs text-gray-400" data-reward-status aria-live="polite"></p>
           </p>
         </section>`
       : `
@@ -840,3 +847,156 @@ icons_();
 initAuth();
 loadMatches();
 setInterval(loadMatches, 10 * 60 * 1000);
+
+
+
+// REWARDED_GPT_LOCAL_INTEGRATION_V1
+(function () {
+  "use strict";
+
+  let gptLoading = null;
+  let servicesReady = false;
+  let activeSlot = null;
+  let activeSessionId = null;
+  let rewardClaimed = false;
+
+  function loadGpt() {
+    if (window.googletag && window.googletag.apiReady) {
+      return Promise.resolve();
+    }
+    if (gptLoading) return gptLoading;
+
+    gptLoading = new Promise((resolve, reject) => {
+      window.googletag = window.googletag || { cmd: [] };
+      const script = document.createElement("script");
+      script.async = true;
+      script.src = "https://securepubads.g.doubleclick.net/tag/js/gpt.js";
+      script.crossOrigin = "anonymous";
+      script.onload = () => resolve();
+      script.onerror = () => {
+        gptLoading = null;
+        reject(new Error("Impossible de charger Google Ad Manager."));
+      };
+      document.head.appendChild(script);
+    });
+    return gptLoading;
+  }
+
+  async function startSession() {
+    const response = await fetch("/api/rewarded/start", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.sessionId) {
+      throw new Error(data.error || "Impossible de démarrer la récompense.");
+    }
+    return data.sessionId;
+  }
+
+  function setStatus(button, message) {
+    const panel = button.closest("section");
+    const status = panel?.querySelector("[data-reward-status]");
+    if (status) status.textContent = message;
+  }
+
+  window.startRewardedGptAd = async function (button) {
+    if (!button || button.disabled) return;
+    button.disabled = true;
+    setStatus(button, "Préparation de la publicité…");
+
+    try {
+      if (activeSlot) {
+        throw new Error("Une publicité est déjà en cours.");
+      }
+
+      activeSessionId = await startSession();
+      rewardClaimed = false;
+      await loadGpt();
+
+      window.googletag = window.googletag || { cmd: [] };
+      window.googletag.cmd.push(function () {
+        try {
+          const slot = googletag.defineOutOfPageSlot(
+            "/23385815425/zouzoua_rewarded_web",
+            googletag.enums.OutOfPageFormat.REWARDED
+          );
+
+          if (!slot) {
+            activeSessionId = null;
+            button.disabled = false;
+            setStatus(button, "La publicité récompensée n'est pas disponible.");
+            return;
+          }
+
+          activeSlot = slot;
+          slot.addService(googletag.pubads());
+
+          googletag.pubads().addEventListener("rewardedSlotReady", function (event) {
+            if (event.slot === slot) {
+              setStatus(button, "La publicité est prête.");
+              event.makeRewardedVisible();
+            }
+          });
+
+          googletag.pubads().addEventListener("rewardedSlotGranted", async function (event) {
+            if (event.slot !== slot || rewardClaimed || !activeSessionId) return;
+            rewardClaimed = true;
+            setStatus(button, "Validation de la récompense…");
+
+            try {
+              const response = await fetch("/api/rewarded/claim", {
+                method: "POST",
+                credentials: "same-origin",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ sessionId: activeSessionId })
+              });
+              const data = await response.json().catch(() => ({}));
+
+              if (!response.ok || !data.ok) {
+                throw new Error(data.error || "La récompense n'a pas pu être validée.");
+              }
+
+              setStatus(button, "Crédit ajouté ! Relance l'analyse.");
+              button.textContent = "Crédit obtenu — relancer l'analyse";
+            } catch (error) {
+              rewardClaimed = false;
+              setStatus(button, error.message || "Erreur lors de la validation.");
+            }
+          });
+
+          googletag.pubads().addEventListener("rewardedSlotClosed", function (event) {
+            if (event.slot !== slot) return;
+            googletag.destroySlots([slot]);
+            activeSlot = null;
+            activeSessionId = null;
+            button.disabled = false;
+
+            if (!rewardClaimed) {
+              setStatus(button, "Publicité fermée : aucun crédit n'a été ajouté.");
+            }
+          });
+
+          if (!servicesReady) {
+            googletag.pubads().enableSingleRequest();
+            googletag.enableServices();
+            servicesReady = true;
+          }
+          googletag.display(slot);
+          setStatus(button, "Attente de la publicité…");
+        } catch (error) {
+          activeSlot = null;
+          activeSessionId = null;
+          button.disabled = false;
+          setStatus(button, error.message || "Impossible d'afficher la publicité.");
+        }
+      });
+    } catch (error) {
+      activeSessionId = null;
+      button.disabled = false;
+      setStatus(button, error.message || "Erreur lors du démarrage de la publicité.");
+    }
+  };
+})();
