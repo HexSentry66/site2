@@ -980,7 +980,7 @@ setInterval(loadMatches, 10 * 60 * 1000);
           });
 
           if (!servicesReady) {
-            googletag.pubads().enableSingleRequest();
+            googletag.setConfig({ singleRequest: true });
             googletag.enableServices();
             servicesReady = true;
           }
