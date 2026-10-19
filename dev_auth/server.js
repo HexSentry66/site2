@@ -31,7 +31,7 @@ app.use((req, res, next) => {
   }
   next();
 });
-const { attachAuth, recordAnalysisStart, finishAnalysisEvent, finishAnalysisEventForUser } = require("./auth");
+const { attachAuth, consumeAnalysisQuota, recordAnalysisStart, finishAnalysisEvent, finishAnalysisEventForUser } = require("./auth");
 const requireAuth = attachAuth(app);
 
 // Le panel est servi uniquement après vérification de la session et du rôle.
@@ -411,12 +411,39 @@ async function runOnDemandAnalysis(matchId, context, claimToken) {
 
 app.post("/analyze", requireAuth, async (req, res) => {
   const context = req.body?.context || {};
-  const auditId = await recordAnalysisStart(req.user.id, context);
   const matchId = String(req.body?.matchId || "");
 
   if (!/^\d+$/.test(matchId)) {
-    await finishAnalysisEvent(auditId, "error");
     return res.status(400).json({ error: "Identifiant du match invalide." });
+  }
+
+  let quota;
+  try {
+    quota = await consumeAnalysisQuota(req.user);
+  } catch (error) {
+    console.error("Réservation du quota impossible :", error.message);
+    return res.status(error.statusCode || 503).json({
+      error: error.statusCode === 401
+        ? "Connexion requise."
+        : "Impossible de vérifier le quota pour le moment."
+    });
+  }
+
+  if (!quota.allowed) {
+    res.set("Cache-Control", "no-store");
+    return res.status(429).json({
+      error: "Tu as utilisé tes 3 analyses gratuites et tu n'as plus de crédit disponible.",
+      quotaReached: true,
+      freeRemaining: 0,
+      creditsRemaining: 0
+    });
+  }
+
+  const auditId = await recordAnalysisStart(req.user.id, context);
+  if (!auditId) {
+    return res.status(503).json({
+      error: "Impossible d'enregistrer la demande d'analyse. Réessaie plus tard."
+    });
   }
 
   try {

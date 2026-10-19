@@ -416,6 +416,7 @@ async function analyze(m) {
   const ctx = buildContext(m);
   let auditId = null;
   let auditFinished = false;
+  let quotaInfo = null;
 
   const finishAudit = async status => {
     if (!auditId || auditFinished) return;
@@ -464,6 +465,9 @@ async function analyze(m) {
 
     let raw = await response.json();
     auditId = raw.auditId || null;
+    if (response.status === 429 && raw.quotaReached) {
+      quotaInfo = raw;
+    }
 
     // Afficher le chargement pendant au moins cinq secondes.
     const elapsed = Date.now() - startedAt;
@@ -519,7 +523,12 @@ async function analyze(m) {
   } catch (error) {
     await finishAudit('error');
     state.analyses[m.id] = {
-      error: error?.message || "Erreur lors de la récupération de l'analyse."
+      error: error?.message || "Erreur lors de la récupération de l'analyse.",
+      ...(quotaInfo ? {
+        quotaReached: true,
+        freeRemaining: quotaInfo.freeRemaining,
+        creditsRemaining: quotaInfo.creditsRemaining
+      } : {})
     };
   }
 
@@ -570,149 +579,24 @@ function renderAnalysis(m) {
   }
 
   if (a.error) {
-    const quotaReached = false; // Quota et récompenses désactivés.
-
-    if (quotaReached) {
-      const overlayId = 'zouzouaRewardAdOverlay';
-      document.getElementById(overlayId)?.remove();
-
-      const overlay = document.createElement('div');
-      overlay.id = overlayId;
-      overlay.className = 'fixed inset-0 z-[100] flex items-center justify-center bg-black/95 p-4';
-      overlay.setAttribute('role', 'dialog');
-      overlay.setAttribute('aria-modal', 'true');
-      overlay.setAttribute('aria-labelledby', 'zouzouaRewardAdTitle');
-
-      overlay.innerHTML = `
-        <section class="w-full max-w-md rounded-2xl border border-line bg-panel p-5 text-center text-white shadow-2xl">
-          <h2 id="zouzouaRewardAdTitle" class="sr-only">Publicité</h2>
-
-          <div class="flex min-h-[120px] items-center justify-center overflow-hidden rounded-lg bg-black/20 p-2">
-            <ins class="adsbygoogle"
-                 style="display:block; min-width:250px; min-height:100px"
-                 data-ad-client="ca-pub-8143082489700562"
-                 data-ad-slot="1733558459"
-                 data-ad-format="auto"
-                 data-full-width-responsive="true"></ins>
+    box.innerHTML = a.quotaReached
+      ? `
+        <section class="rounded-xl border border-amber-500/40 bg-amber-500/5 p-4 text-amber-200">
+          <div class="flex items-center gap-2 font-semibold">
+            <i data-lucide="lock-keyhole" class="w-4 h-4"></i>
+            Limite quotidienne atteinte
           </div>
-
-          <p id="zouzouaRewardStatus" class="mt-3 text-xs text-gray-400">Patiente 20 secondes pour une nouvelle analyse.</p>
-          <button id="zouzouaCloseRewardAd" type="button" disabled
-                  class="mt-4 w-full rounded-lg border border-line px-4 py-3 font-semibold opacity-50 cursor-not-allowed">
-            Masquer (20)
-          </button>
+          <p class="mt-2 text-sm text-gray-300">${esc(a.error)}</p>
+          <p class="mt-2 text-xs text-gray-400">
+            Le quota se réinitialise demain. Les crédits disponibles pourront être utilisés pour les analyses suivantes.
+          </p>
+        </section>`
+      : `
+        <section class="rounded-xl border border-red-500/40 bg-red-500/5 p-4 text-red-300">
+          <p>${esc(a.error)}</p>
         </section>`;
-
-      document.body.appendChild(overlay);
-
-      const rewardAd = overlay.querySelector('.adsbygoogle');
-      if (rewardAd && !rewardAd.dataset.adsbygoogleStatus) {
-        try {
-          (window.adsbygoogle = window.adsbygoogle || []).push({});
-        } catch (error) {
-          console.warn('Annonce AdSense indisponible :', error.message);
-        }
-      }
-
-      const closeButton = overlay.querySelector('#zouzouaCloseRewardAd');
-      const countdown = overlay.querySelector('#zouzouaRewardCountdown');
-      const status = overlay.querySelector('#zouzouaRewardStatus');
-
-      closeButton.disabled = true;
-      closeButton.classList.add('opacity-50', 'cursor-not-allowed');
-
-      (async () => {
-        try {
-          // Créer une session de récompense pour l'utilisateur connecté.
-          const startResponse = await fetch('/api/reward-simulation/start', {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({})
-          });
-
-          const startData = await startResponse.json().catch(() => ({}));
-
-          if (!startResponse.ok || !startData.ok) {
-            status.textContent = startData.error || 'Impossible de démarrer la récompense.';
-            return;
-          }
-
-          // Les administrateurs ont déjà leurs tickets illimités.
-          if (startData.alreadyRewarded) {
-            status.textContent = 'Les administrateurs disposent déjà de tickets illimités.';
-            return;
-          }
-
-          const sessionId = startData.sessionId;
-          if (!sessionId) {
-            status.textContent = 'Aucune session de récompense reçue du serveur.';
-            return;
-          }
-
-          for (let seconds = 20; seconds > 0; seconds--) {
-            status.textContent = `Patiente ${seconds} seconde${seconds > 1 ? 's' : ''} pour le crédit de test.`;
-            closeButton.textContent = `Masquer (${seconds})`;
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            if (!document.body.contains(overlay)) return;
-          }
-
-          if (countdown) countdown.textContent = '';
-          status.textContent = 'Ajout du crédit de test…';
-
-          const claimController = new AbortController();
-          const claimTimeout = setTimeout(() => claimController.abort(), 30000);
-
-          let response;
-          try {
-            response = await fetch('/api/reward-simulation/claim', {
-              method: 'POST',
-              credentials: 'same-origin',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ sessionId }),
-              signal: claimController.signal
-            });
-          } finally {
-            clearTimeout(claimTimeout);
-          }
-          const data = await response.json().catch(() => ({}));
-
-          if (!response.ok || !data.ok) {
-            status.textContent = data.error || 'Le crédit de test n’a pas pu être ajouté.';
-          } else {
-            status.textContent = `Crédit de test ajouté. Solde : ${data.credits} crédit(s).`;
-          }
-        } catch (error) {
-          console.error('Erreur de crédit de test :', error);
-          status.textContent = 'Connexion indisponible. Réessaie plus tard.';
-        } finally {
-          closeButton.disabled = false;
-          closeButton.textContent = 'Masquer ✕';
-          closeButton.classList.remove('opacity-50', 'cursor-not-allowed');
-          closeButton.classList.add('hover:bg-white/10');
-        }
-      })();
-
-      closeButton.addEventListener('click', () => {
-        if (closeButton.disabled) return;
-        overlay.remove();
-        box.innerHTML = `
-          <section class="rounded-xl border border-line bg-panel p-4 text-gray-300">
-            <p>Tu peux maintenant lancer une nouvelle analyse.</p>
-          </section>`;
-        icons_();
-      });
-
-      return icons_();
-    }
-
-    box.innerHTML = `
-    <section class="rounded-xl border border-red-500/40 bg-red-500/5 p-4 text-red-300">
-      <p>${esc(a.error)}</p>
-    </section>`;
     return icons_();
   }
-
 
   const pronos = a.pronostics || [];
 

@@ -56,7 +56,7 @@ async function finishAnalysisEventForUser(id, userId, status) {
   if (!id || !userId || !['success', 'error'].includes(status)) return false;
 
   try {
-    await query(`
+    const result = await query(`
       UPDATE analysis_events
       SET status = $1,
           completed_at = to_char(
@@ -67,7 +67,8 @@ async function finishAnalysisEventForUser(id, userId, status) {
         AND user_id = $3
         AND status = 'pending'
     `, [status, id, userId]);
-    return true;
+
+    return result.rowCount === 1;
   } catch (error) {
     console.error('Clôture du journal utilisateur impossible :', error.message);
     return false;
@@ -630,9 +631,108 @@ function attachAuth(app) {
   return requireAuth;
 }
 
+
+async function consumeAnalysisQuota(user) {
+  if (!user || !Number.isSafeInteger(Number(user.id)) || Number(user.id) < 1) {
+    const error = new Error('Connexion requise.');
+    error.statusCode = 401;
+    throw error;
+  }
+
+  // Les administrateurs sont exemptés des compteurs.
+  if (user.role === 'admin') {
+    return { allowed: true, kind: 'admin', freeRemaining: null, creditsRemaining: null };
+  }
+
+  const userId = Number(user.id);
+  // La date est calculée en UTC ; la Côte d’Ivoire est également en UTC.
+  const day = new Date().toISOString().slice(0, 10);
+
+  return transaction(async client => {
+    await client.query(`
+      INSERT INTO daily_usage (user_id, usage_date, free_used, rewarded_used)
+      VALUES ($1, $2, 0, 0)
+      ON CONFLICT (user_id, usage_date) DO NOTHING
+    `, [userId, day]);
+
+    const usageResult = await client.query(`
+      SELECT free_used, rewarded_used
+      FROM daily_usage
+      WHERE user_id = $1 AND usage_date = $2
+      FOR UPDATE
+    `, [userId, day]);
+
+    if (!usageResult.rows.length) {
+      throw new Error('Compteur quotidien introuvable après réservation.');
+    }
+
+    const freeUsed = Number(usageResult.rows[0].free_used);
+
+    if (freeUsed < 3) {
+      await client.query(`
+        UPDATE daily_usage
+        SET free_used = free_used + 1
+        WHERE user_id = $1 AND usage_date = $2
+      `, [userId, day]);
+
+      return {
+        allowed: true,
+        kind: 'free',
+        freeRemaining: 2 - freeUsed,
+        creditsRemaining: null
+      };
+    }
+
+    // Créer un solde nul s'il n'existe pas, puis le verrouiller.
+    await client.query(`
+      INSERT INTO reward_credits (user_id, credits)
+      VALUES ($1, 0)
+      ON CONFLICT (user_id) DO NOTHING
+    `, [userId]);
+
+    const creditResult = await client.query(`
+      SELECT credits
+      FROM reward_credits
+      WHERE user_id = $1
+      FOR UPDATE
+    `, [userId]);
+
+    const credits = Number(creditResult.rows[0]?.credits || 0);
+
+    if (credits > 0) {
+      await client.query(`
+        UPDATE reward_credits
+        SET credits = credits - 1
+        WHERE user_id = $1 AND credits > 0
+      `, [userId]);
+
+      await client.query(`
+        UPDATE daily_usage
+        SET rewarded_used = rewarded_used + 1
+        WHERE user_id = $1 AND usage_date = $2
+      `, [userId, day]);
+
+      return {
+        allowed: true,
+        kind: 'rewarded',
+        freeRemaining: 0,
+        creditsRemaining: credits - 1
+      };
+    }
+
+    return {
+      allowed: false,
+      kind: null,
+      freeRemaining: 0,
+      creditsRemaining: 0
+    };
+  });
+}
+
 module.exports = {
   attachAuth,
   enforceDailyQuota,
+  consumeAnalysisQuota,
   recordAnalysisStart,
   finishAnalysisEvent,
   finishAnalysisEventForUser
