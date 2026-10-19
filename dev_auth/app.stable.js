@@ -934,8 +934,36 @@ setInterval(loadMatches, 10 * 60 * 1000);
           activeSlot = slot;
           slot.addService(googletag.pubads());
 
+          let adWaitTimer = null;
+          function clearAdWaitTimer() {
+            if (adWaitTimer !== null) {
+              clearTimeout(adWaitTimer);
+              adWaitTimer = null;
+            }
+          }
+          function finishWithoutAd(message) {
+            if (activeSlot !== slot) return;
+            clearAdWaitTimer();
+            googletag.destroySlots([slot]);
+            activeSlot = null;
+            activeSessionId = null;
+            button.disabled = false;
+            setStatus(button, message);
+          }
+
+          adWaitTimer = setTimeout(function () {
+            finishWithoutAd("Aucune publicité n'est arrivée après 15 secondes. Réessaie plus tard.");
+          }, 15000);
+
+          googletag.pubads().addEventListener("slotRenderEnded", function (event) {
+            if (event.slot === slot && event.isEmpty) {
+              finishWithoutAd("Aucune publicité disponible pour le moment. Réessaie plus tard.");
+            }
+          });
+
           googletag.pubads().addEventListener("rewardedSlotReady", function (event) {
             if (event.slot === slot) {
+              clearAdWaitTimer();
               setStatus(button, "La publicité est prête.");
               event.makeRewardedVisible();
             }
@@ -969,6 +997,7 @@ setInterval(loadMatches, 10 * 60 * 1000);
 
           googletag.pubads().addEventListener("rewardedSlotClosed", function (event) {
             if (event.slot !== slot) return;
+            clearAdWaitTimer();
             googletag.destroySlots([slot]);
             activeSlot = null;
             activeSessionId = null;
