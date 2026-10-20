@@ -73,11 +73,11 @@ async function loadMatches() {
   list.innerHTML = Array.from({ length: 8 }, () => `<div class="p-4 border-b border-line"><div class="skel h-3 w-24 mb-3"></div><div class="skel h-4 w-3/4 mb-2"></div><div class="skel h-4 w-2/3"></div></div>`).join('');
   $('#refreshBtn svg')?.classList.add('spin');
   try {
-    const now = new Date(); const days = [-1, 0, 1].map(o => { const d = new Date(now); d.setDate(d.getDate() + o); return ymd(d); });
+    const now = new Date(); const days = [-1, 0, 1, 2].map(o => { const d = new Date(now); d.setDate(d.getDate() + o); return ymd(d); });
     const res = await Promise.allSettled(days.map(d => getJSON(`${API}/scoreboard?dates=${d}`)));
     const map = new Map();
     res.forEach(r => r.status === 'fulfilled' && (r.value.events || []).forEach(ev => map.set(ev.id, ev)));
-    const limit = now.getTime() + 24 * 3600000;
+    const limit = now.getTime() + 48 * 3600000;
     state.matches = [...map.values()].map(parseEvent)
       .filter(m => (m.state === 'pre' && m.date.getTime() <= limit && m.date.getTime() >= now.getTime() - 5 * 60000) || m.state === 'in')
       .sort((a, b) => a.date - b.date);
@@ -107,7 +107,7 @@ function renderList() {
   $('#countLabel').textContent = items.length;
   const list = $('#matchList');
   if (!items.length) {
-    list.innerHTML = `<div class="p-10 text-center text-sm text-gray-400"><i data-lucide="calendar-x" class="w-7 h-7 mx-auto mb-3 text-gray-600"></i>Aucun match trouvé dans les prochaines 24h.</div>`;
+    list.innerHTML = `<div class="p-10 text-center text-sm text-gray-400"><i data-lucide="calendar-x" class="w-7 h-7 mx-auto mb-3 text-gray-600"></i>Aucun match trouvé dans les prochaines 48h.</div>`;
     return icons_();
   }
   let html = '', lastDay = '', matchCount = 0;
