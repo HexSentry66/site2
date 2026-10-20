@@ -668,7 +668,7 @@ async function consumeAnalysisQuota(user) {
 
     const freeUsed = Number(usageResult.rows[0].free_used);
 
-    if (freeUsed < 3) {
+    if (freeUsed < 20) {
       await client.query(`
         UPDATE daily_usage
         SET free_used = free_used + 1
@@ -678,7 +678,7 @@ async function consumeAnalysisQuota(user) {
       return {
         allowed: true,
         kind: 'free',
-        freeRemaining: 2 - freeUsed,
+        freeRemaining: 20 - freeUsed,
         creditsRemaining: null
       };
     }
