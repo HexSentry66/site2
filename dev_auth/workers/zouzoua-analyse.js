@@ -1,7 +1,7 @@
 require("dotenv").config({ path: "./secrets/.env" });
-const NVIDIA_BASE_URL = 'https://integrate.api.nvidia.com/v1';
+const GROQ_BASE_URL = 'https://api.groq.com/openai/v1';
 // Clé chargée depuis secrets/.env
-const NVIDIA_MODEL = 'openai/gpt-oss-20b';
+const GROQ_MODEL = 'openai/gpt-oss-20b';
 
 function buildPrompt(ctx) {
   return `Tu es un analyste football professionnel francophone spécialisé dans les analyses d'avant-match. Tu écris toujours en français.
@@ -87,29 +87,29 @@ router.post('/analyze', async ({ request }) => {
   let lastErr = 'Erreur inconnue';
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const r = await fetch(NVIDIA_BASE_URL + '/chat/completions', {
+      const r = await fetch(GROQ_BASE_URL + '/chat/completions', {
         method: 'POST',
-        headers: { 'Authorization': 'Bearer ' + process.env.NVIDIA_API_KEY, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        headers: { 'Authorization': 'Bearer ' + process.env.GROQ_API_KEY, 'Content-Type': 'application/json', 'Accept': 'application/json' },
         body: JSON.stringify({
-          model: NVIDIA_MODEL,
+          model: GROQ_MODEL,
           messages: [
             { role: 'system', content: 'Tu es un analyste football. Tu réponds toujours en français et uniquement en JSON valide.' },
             { role: 'user', content: buildPrompt(ctx) }
           ],
           temperature: 0.6,
           top_p: 0.95,
-          max_tokens: 4096,
+          max_completion_tokens: 4096,
           stream: false
         })
       });
       const raw = await r.text();
-      if (!r.ok) { lastErr = 'Erreur API NVIDIA (' + r.status + ') : ' + raw.slice(0, 300); if (r.status < 500) break; continue; }
+      if (!r.ok) { lastErr = 'Erreur API Groq (' + r.status + ') : ' + raw.slice(0, 300); if (r.status < 500) break; continue; }
       const data = JSON.parse(raw);
       const msg = data.choices && data.choices[0] && data.choices[0].message || {};
       const content = msg.content || msg.reasoning_content || '';
       let result = extractJSON(content);
 
-      // Conversion format NVIDIA -> format Zouzoua
+      // Conversion format Groq -> format Zouzoua
       if (!result.scenarios && result.predicted_outcome) {
         result = {
           resume: result.summary || '',
@@ -130,7 +130,7 @@ router.post('/analyze', async ({ request }) => {
         };
       }
       if (!Array.isArray(result.scenarios) || !result.scenarios.length) throw new Error('Aucun scénario retourné');
-      result.model = NVIDIA_MODEL;
+      result.model = GROQ_MODEL;
       return result;
     } catch (e) {
       lastErr = e.message || String(e);

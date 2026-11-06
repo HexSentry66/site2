@@ -94,8 +94,8 @@ app.get("/icons/:filename", (req, res) => {
 });
 
 
-const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
-const NVIDIA_MODEL = "openai/gpt-oss-20b";
+const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
+const GROQ_MODEL = "openai/gpt-oss-20b";
 const keyManager = require("./key-manager");
 const { query: analysisQuery } = require("./db/postgres");
 
@@ -126,14 +126,14 @@ async function ensureMatchAnalysesTable() {
 }
 
 async function generateFootballAnalysis(context) {
-  const response = await fetch(NVIDIA_BASE_URL + "/chat/completions", {
+  const response = await fetch(GROQ_BASE_URL + "/chat/completions", {
     method: "POST",
     headers: {
       "Authorization": "Bearer " + keyManager.getNextKey(),
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      model: NVIDIA_MODEL,
+      model: GROQ_MODEL,
       messages: [
         {
           role: "system",
@@ -159,16 +159,17 @@ Règles : exactement 3 pronostics, classés du plus intéressant au moins intér
         { role: "user", content: JSON.stringify(context) }
       ],
       temperature: 0.6,
-      max_tokens: 4096
+      max_completion_tokens: 4096
     })
   });
 
   if (!response.ok) {
-    throw new Error("NVIDIA HTTP " + response.status);
+    throw new Error("Groq HTTP " + response.status);
   }
 
   const data = await response.json();
   const content = data.choices?.[0]?.message?.content || "";
+  console.log("\n===== RÉPONSE BRUTE GROQ =====\n" + content + "\n===== FIN RÉPONSE GROQ =====\n");
   const first = content.indexOf("{");
   const last = content.lastIndexOf("}");
 
@@ -592,69 +593,16 @@ app.post("/analyze", requireAuth, async (req, res) => {
     });
   }
 
+  res.set("Cache-Control", "no-store");
+
   try {
-    const cached = await analysisQuery(`
-      SELECT result, status
-      FROM match_analyses
-      WHERE event_id = $1
-    `, [matchId]);
-
-    const row = cached.rows[0];
-
-    if (row?.status === "ready" && row.result) {
-      await finishAnalysisEvent(auditId, "success");
-      return res.json(row.result);
-    }
-
-    // Réservation atomique avec jeton unique pour protéger le résultat.
-    // Une réservation bloquée depuis plus de 20 minutes peut être reprise.
-    const claimToken = require("crypto").randomUUID();
-    const claim = await analysisQuery(`
-      INSERT INTO match_analyses
-        (event_id, match_text, competition, match_date, context,
-         status, claim_token, updated_at)
-      VALUES ($1, $2, $3, $4, $5::jsonb, 'processing', $6, NOW())
-      ON CONFLICT (event_id) DO UPDATE SET
-        match_text = EXCLUDED.match_text,
-        competition = EXCLUDED.competition,
-        match_date = EXCLUDED.match_date,
-        context = EXCLUDED.context,
-        status = 'processing',
-        claim_token = EXCLUDED.claim_token,
-        updated_at = NOW()
-      WHERE match_analyses.status <> 'ready'
-        AND (
-          match_analyses.status <> 'processing'
-          OR match_analyses.updated_at < NOW() - INTERVAL '20 minutes'
-        )
-      RETURNING event_id
-    `, [
-      matchId,
-      String(context.match || `Match ${matchId}`).slice(0, 500),
-      String(context.championnat || "Football").slice(0, 200),
-      String(context.date || ""),
-      JSON.stringify(context),
-      claimToken
-    ]);
-
-    if (claim.rowCount > 0) {
-      void runOnDemandAnalysis(matchId, context, claimToken);
-      console.log("Analyse à la demande démarrée :", matchId);
-    } else {
-      console.log("Analyse déjà en cours ou prête :", matchId);
-    }
-
-    return res.status(202).json({
-      pending: true,
-      matchId,
-      auditId,
-      message: "Analyse en préparation. Le résultat sera partagé dès qu'il sera prêt."
-    });
+    const result = await generateFootballAnalysis(context);
+    return res.json({ ...result, auditId });
   } catch (error) {
-    await finishAnalysisEvent(auditId, "error");
-    console.error("Demande d'analyse impossible :", error.message);
-    return res.status(503).json({
-      error: "Le stockage des analyses est temporairement indisponible."
+    console.error("Génération Groq impossible :", error.message);
+    return res.status(502).json({
+      error: "Impossible de générer l'analyse pour le moment.",
+      auditId
     });
   }
 });
@@ -930,16 +878,7 @@ app.get("/api/matches/:id/summary", async (req, res) => {
 app.listen(process.env.PORT || 3000, "0.0.0.0", () => {
   console.log("Zouzoua local lancé sur http://localhost:3000");
 
-  // Initialisation du stockage puis préparation des matchs.
-  ensureRewardedSessionsTable()
-    .then(() => ensureMatchAnalysesTable())
-    .then(() => precomputeUpcomingMatches())
-    .catch(error => console.error("Initialisation des analyses impossible :", error.message));
-
-  // Actualisation périodique lorsque le service est actif.
-  setInterval(() => {
-    precomputeUpcomingMatches().catch(error =>
-      console.error("Pré-calcul périodique impossible :", error.message)
-    );
-  }, 60 * 1000);
+  ensureRewardedSessionsTable().catch(error =>
+    console.error("Initialisation des publicités récompensées impossible :", error.message)
+  );
 });

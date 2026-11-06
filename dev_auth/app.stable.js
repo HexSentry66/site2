@@ -424,7 +424,6 @@ async function analyze(m) {
     const finishUrl = ANALYZE_URL.replace(/\/$/, '') +
       '/api/analysis/audit/' + encodeURIComponent(String(auditId)) + '/finish';
 
-    // Deux tentatives au maximum en cas d'échec réseau ou HTTP.
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const finishResponse = await fetch(finishUrl, {
@@ -438,9 +437,7 @@ async function analyze(m) {
           auditFinished = true;
           return;
         }
-      } catch (_) {
-        // Ne pas masquer le résultat de l'analyse.
-      }
+      } catch (_) {}
 
       if (attempt === 0) {
         await new Promise(resolve => setTimeout(resolve, 500));
@@ -448,8 +445,7 @@ async function analyze(m) {
     }
 
     console.warn('Clôture du journal d’analyse non confirmée.', {
-      auditId,
-      status
+      auditId, status
     });
   };
 
@@ -458,68 +454,45 @@ async function analyze(m) {
       ANALYZE_URL.replace(/\/$/, '') + '/analyze',
       {
         method: 'POST',
+        credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ matchId: String(m.id), context: ctx })
       }
     );
 
-    let raw = await response.json();
+    const responseText = await response.text();
+    console.log("===== RÉPONSE HTTP ANALYZE =====");
+    console.log("HTTP:", response.status);
+    console.log("Content-Type:", response.headers.get("content-type"));
+    console.log("Corps:", responseText);
+    console.log("===== FIN RÉPONSE HTTP =====");
+    let raw;
+    try {
+      raw = JSON.parse(responseText);
+    } catch {
+      throw new Error("Réponse HTTP non JSON (HTTP " + response.status + "). Voir la console.");
+    }
     auditId = raw.auditId || null;
+
     if (response.status === 429 && raw.quotaReached) {
       quotaInfo = raw;
     }
 
-    // Afficher le chargement pendant au moins cinq secondes.
     const elapsed = Date.now() - startedAt;
     if (elapsed < 5000) {
       await new Promise(resolve => setTimeout(resolve, 5000 - elapsed));
     }
 
-    if (response.status === 202 && raw.pending) {
-      let readyResult = null;
-
-      // Consultation du cache sans répéter la demande payante.
-      for (let attempt = 0; attempt < 36; attempt++) {
-        await new Promise(resolve => setTimeout(resolve, 5000));
-
-        const check = await fetch(
-          ANALYZE_URL.replace(/\/$/, '') +
-            '/api/analysis/' + encodeURIComponent(String(m.id))
-        );
-        const status = await check.json();
-
-        if (!check.ok) {
-          throw new Error(status.error || 'Impossible de consulter le cache.');
-        }
-
-        if (status.error) {
-          throw new Error(status.error);
-        }
-
-        if (status.ready && status.result) {
-          readyResult = status.result;
-          readyResult.generatedAt = status.generatedAt
-            ? new Date(status.generatedAt).getTime()
-            : Date.now();
-          break;
-        }
-      }
-
-      if (!readyResult) {
-        throw new Error(
-          "L'analyse n'est pas encore prête. Réessaie dans quelques minutes."
-        );
-      }
-
-      raw = readyResult;
-      await finishAudit('success');
-    } else if (!response.ok || raw.error) {
+    if (!response.ok || raw.error) {
       throw new Error(raw.error || "Erreur du service d'analyse.");
-    } else {
-      raw.generatedAt = Date.now();
     }
 
+    delete raw.auditId;
+    raw.generatedAt = Date.now();
+
+    await finishAudit('success');
     state.analyses[m.id] = raw;
+
   } catch (error) {
     await finishAudit('error');
     state.analyses[m.id] = {
@@ -536,24 +509,6 @@ async function analyze(m) {
     renderAnalyzeBtn(m);
     renderAnalysis(m);
   }
-}
-
-async function _unusedLegacy(m, ctx) {
-  const prompt = `Tu es un analyste football expert. À partir des données d'avant-match ci-dessous (JSON), propose exactement 3 scénarios plausibles et distincts pour ce match. Base-toi uniquement sur les données fournies et sur ta connaissance générale des équipes. Les probabilités des 3 scénarios doivent totaliser 100.
-
-DONNÉES:
-${JSON.stringify(ctx)}
-
-Réponds UNIQUEMENT avec un JSON valide (sans markdown) au format :
-{
- "resume": "synthèse en 2-3 phrases du rapport de force",
- "scenarios": [
-   {"titre": "titre court", "issue": "1|N|2", "probabilite": 45, "score_probable": "2-1", "total_buts": "Plus de 2.5", "deux_equipes_marquent": "Oui|Non", "deroulement": "récit du déroulé du match en 3-4 phrases", "facteurs_cles": ["facteur 1","facteur 2","facteur 3"]}
- ],
- "points_attention": ["point 1","point 2"],
- "confiance": "Faible|Moyenne|Élevée"
-}`;
-  return prompt;
 }
 
 function renderAnalysis(m) {
@@ -605,7 +560,16 @@ function renderAnalysis(m) {
     return icons_();
   }
 
-  const pronos = a.pronostics || [];
+  const pronos = Array.isArray(a.pronostics) ? a.pronostics : [];
+
+  if (!a.resume || pronos.length === 0) {
+    box.innerHTML = `
+      <section class="rounded-xl border border-line bg-panel p-4">
+        <h3 class="font-semibold text-sm mb-3">Réponse brute de Groq</h3>
+        <pre class="text-xs text-gray-300 whitespace-pre-wrap break-words overflow-auto max-h-[600px]">${esc(JSON.stringify(a, null, 2))}</pre>
+      </section>`;
+    return icons_();
+  }
 
   console.log("===== PRONOS RENDER =====");
   console.log(a.pronostics);
